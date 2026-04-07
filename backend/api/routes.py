@@ -72,8 +72,25 @@ class ShortestPathResponse(BaseModel):
 	total_length: float
 
 
-class NotImplementedResponse(BaseModel):
-	detail: str
+class TrafficEdgeStateDTO(BaseModel):
+	id: int
+	capacity_v: float
+	vehicle_count_n: float
+	load_ratio: float
+	dynamic_travel_time: float
+	congestion_level: str
+
+
+class TrafficStateResponse(BaseModel):
+	timestamp: float
+	edges: list[TrafficEdgeStateDTO]
+
+
+class TrafficShortestPathResponse(BaseModel):
+	vertex_ids: list[int]
+	edge_ids: list[int] = Field(default_factory=list)
+	total_length: float
+	total_travel_time: float
 
 
 def _get_engine(request: Request) -> GraphEngine:
@@ -127,21 +144,36 @@ async def post_shortest_path(
 	return result
 
 
-@router.get(
-	"/traffic/state",
-	response_model=NotImplementedResponse,
-	status_code=status.HTTP_501_NOT_IMPLEMENTED,
-)
-async def get_traffic_state() -> dict[str, str]:
-	"""M5 placeholder: traffic state for polling/WebSocket fallback."""
-	return {"detail": "Not implemented yet. Reserved for M5 traffic simulation."}
+@router.get("/traffic/state", response_model=TrafficStateResponse)
+async def get_traffic_state(request: Request) -> dict[str, Any]:
+	"""M5/F4: traffic state for polling."""
+	try:
+		return _get_engine(request).get_traffic_state()
+	except RuntimeError as exc:
+		raise HTTPException(status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc)) from exc
 
 
-@router.post(
-	"/shortest-path/traffic",
-	response_model=NotImplementedResponse,
-	status_code=status.HTTP_501_NOT_IMPLEMENTED,
-)
-async def post_traffic_shortest_path() -> dict[str, str]:
-	"""M5 placeholder: traffic-aware shortest path."""
-	return {"detail": "Not implemented yet. Reserved for M5 traffic-aware routing."}
+@router.post("/shortest-path/traffic", response_model=TrafficShortestPathResponse)
+async def post_traffic_shortest_path(
+	request: Request,
+	payload: ShortestPathRequest,
+) -> dict[str, Any]:
+	"""M5/F5: shortest path by current dynamic travel time."""
+	try:
+		result = _get_engine(request).shortest_path_by_vertex_id(
+			source=payload.source,
+			target=payload.target,
+			include_edges=True,
+			use_traffic=True,
+		)
+	except ValueError as exc:
+		raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+	except RuntimeError as exc:
+		raise HTTPException(status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc)) from exc
+
+	if not result.get("vertex_ids"):
+		raise HTTPException(
+			status_code=status.HTTP_400_BAD_REQUEST,
+			detail="No path found between source and target",
+		)
+	return result

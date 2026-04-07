@@ -1,13 +1,16 @@
 import { create } from "zustand";
 
-import { toGraphData, toPathData } from "@/bridge/graphBridge";
+import { toGraphData, toPathData, toTrafficEdgeMap } from "@/bridge/graphBridge";
 import { graphApi } from "@/api/graphApi";
 import type {
+  Edge,
   GraphData,
   GraphMetaResponse,
   LoadNearbyParams,
+  PathMode,
   PathData,
   SelectionState,
+  TrafficEdgeState,
   ViewState,
 } from "@/types/graph";
 
@@ -15,12 +18,14 @@ interface NetworkState {
   loadingMeta: boolean;
   loadingNearby: boolean;
   loadingPath: boolean;
+  loadingTraffic: boolean;
   error: string | null;
 }
 
 interface RequestState {
   nearbyRequestId: number;
   pathRequestId: number;
+  trafficRequestId: number;
 }
 
 interface NearbyQueryState {
@@ -41,6 +46,14 @@ interface GraphStoreState {
   meta: GraphMetaResponse | null;
   graph: GraphData;
   path: PathData | null;
+  staticPath: PathData | null;
+  trafficPath: PathData | null;
+  pathMode: PathMode;
+  trafficTimestamp: number | null;
+  trafficEdgesById: Record<number, TrafficEdgeState>;
+  trafficPollingEnabled: boolean;
+  trafficPollingIntervalMs: number;
+  trafficPollingTimerId: number | null;
   selection: SelectionState;
   view: ViewState;
   hover: HoverState;
@@ -48,8 +61,13 @@ interface GraphStoreState {
   request: RequestState;
   lastNearbyQuery: NearbyQueryState | null;
 
+  setPathMode: (mode: PathMode) => void;
   setView: (view: Partial<ViewState>) => void;
   setHover: (vertexId: number | null) => void;
+  setTrafficPollingEnabled: (enabled: boolean) => void;
+  fetchTrafficState: () => Promise<void>;
+  startTrafficPolling: (intervalMs?: number) => void;
+  stopTrafficPolling: () => void;
   clearError: () => void;
   clearSelection: () => void;
   selectVertex: (vertexId: number) => void;
@@ -111,10 +129,49 @@ function clampZoom(value: number): number {
   return Math.max(VIEW_ZOOM_MIN, Math.min(getViewZoomMax(), value));
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function applyTrafficToEdges(edges: Edge[], trafficEdgesById: Record<number, TrafficEdgeState>): Edge[] {
+  return edges.map((edge) => {
+    const traffic = trafficEdgesById[edge.id];
+    if (!traffic) {
+      return edge;
+    }
+    return {
+      ...edge,
+      capacity_v: traffic.capacity_v,
+      vehicle_count_n: traffic.vehicle_count_n,
+      load_ratio: traffic.load_ratio,
+      dynamic_travel_time: traffic.dynamic_travel_time,
+      congestion_level: traffic.congestion_level,
+    };
+  });
+}
+
+function resolveDisplayedPath(mode: PathMode, staticPath: PathData | null, trafficPath: PathData | null): PathData | null {
+  if (mode === "static") {
+    return staticPath;
+  }
+  if (mode === "traffic") {
+    return trafficPath;
+  }
+  return trafficPath ?? staticPath;
+}
+
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
   meta: null,
   graph: initialGraph,
   path: null,
+  staticPath: null,
+  trafficPath: null,
+  pathMode: "compare",
+  trafficTimestamp: null,
+  trafficEdgesById: {},
+  trafficPollingEnabled: true,
+  trafficPollingIntervalMs: 1000,
+  trafficPollingTimerId: null,
   selection: initialSelection,
   view: initialView,
   hover: { vertexId: null },
@@ -122,13 +179,30 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     loadingMeta: false,
     loadingNearby: false,
     loadingPath: false,
+    loadingTraffic: false,
     error: null,
   },
   request: {
     nearbyRequestId: 0,
     pathRequestId: 0,
+    trafficRequestId: 0,
   },
   lastNearbyQuery: null,
+
+  setPathMode: (mode) => {
+    const state = get();
+    const nextPath = resolveDisplayedPath(mode, state.staticPath, state.trafficPath);
+    set(() => ({ pathMode: mode, path: nextPath }));
+
+    const shouldRecompute =
+      state.selection.phase === "pickedAB" &&
+      ((mode === "static" && state.staticPath == null) ||
+        (mode === "traffic" && state.trafficPath == null) ||
+        (mode === "compare" && (state.staticPath == null || state.trafficPath == null)));
+    if (shouldRecompute) {
+      void get().computeShortestPath();
+    }
+  },
 
   setView: (viewPatch) => {
     set((state) => ({
@@ -144,6 +218,81 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set(() => ({ hover: { vertexId } }));
   },
 
+  setTrafficPollingEnabled: (enabled) => {
+    set(() => ({ trafficPollingEnabled: enabled }));
+    if (enabled) {
+      get().startTrafficPolling();
+      return;
+    }
+    get().stopTrafficPolling();
+  },
+
+  startTrafficPolling: (intervalMs) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const state = get();
+    const nextInterval = intervalMs ?? state.trafficPollingIntervalMs;
+    if (state.trafficPollingTimerId != null) {
+      window.clearInterval(state.trafficPollingTimerId);
+    }
+    const timerId = window.setInterval(() => {
+      void get().fetchTrafficState();
+    }, nextInterval);
+    set(() => ({
+      trafficPollingTimerId: timerId,
+      trafficPollingIntervalMs: nextInterval,
+    }));
+    void get().fetchTrafficState();
+  },
+
+  stopTrafficPolling: () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const timerId = get().trafficPollingTimerId;
+    if (timerId != null) {
+      window.clearInterval(timerId);
+    }
+    set(() => ({ trafficPollingTimerId: null }));
+  },
+
+  fetchTrafficState: async () => {
+    const requestId = get().request.trafficRequestId + 1;
+    set((state) => ({
+      request: { ...state.request, trafficRequestId: requestId },
+      network: { ...state.network, loadingTraffic: true, error: null },
+    }));
+
+    try {
+      const traffic = await graphApi.getTrafficState();
+      if (get().request.trafficRequestId !== requestId) {
+        return;
+      }
+      const edgesById = toTrafficEdgeMap(traffic);
+      set((state) => ({
+        trafficTimestamp: traffic.timestamp,
+        trafficEdgesById: edgesById,
+        graph: {
+          ...state.graph,
+          edges: applyTrafficToEdges(state.graph.edges, edgesById),
+        },
+        network: { ...state.network, loadingTraffic: false },
+      }));
+    } catch (error) {
+      if (get().request.trafficRequestId !== requestId) {
+        return;
+      }
+      set((state) => ({
+        network: {
+          ...state.network,
+          loadingTraffic: false,
+          error: errorMessage(error, "Failed to fetch traffic state"),
+        },
+      }));
+    }
+  },
+
   clearError: () => {
     set((state) => ({ network: { ...state.network, error: null } }));
   },
@@ -152,6 +301,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set(() => ({
       selection: initialSelection,
       path: null,
+      staticPath: null,
+      trafficPath: null,
       hover: { vertexId: null },
     }));
   },
@@ -171,6 +322,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           targetVertexId: null,
         },
         path: null,
+        staticPath: null,
+        trafficPath: null,
         network: { ...get().network, error: null },
       }));
       return;
@@ -199,6 +352,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         targetVertexId: null,
       },
       path: null,
+      staticPath: null,
+      trafficPath: null,
       network: { ...get().network, error: null },
     }));
   },
@@ -214,9 +369,12 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         network: { ...state.network, loadingMeta: false },
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load meta";
       set((state) => ({
-        network: { ...state.network, loadingMeta: false, error: message },
+        network: {
+          ...state.network,
+          loadingMeta: false,
+          error: errorMessage(error, "Failed to load meta"),
+        },
       }));
     }
   },
@@ -241,6 +399,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       lastNearbyQuery: query,
       selection: preserveSelection ? state.selection : initialSelection,
       path: preserveSelection ? state.path : null,
+      staticPath: preserveSelection ? state.staticPath : null,
+      trafficPath: preserveSelection ? state.trafficPath : null,
       hover: preserveSelection ? state.hover : { vertexId: null },
     }));
 
@@ -250,16 +410,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         return;
       }
       set((state) => ({
-        graph: toGraphData(nearby),
+        graph: {
+          ...toGraphData(nearby),
+          edges: applyTrafficToEdges(toGraphData(nearby).edges, state.trafficEdgesById),
+        },
         network: { ...state.network, loadingNearby: false },
       }));
+      if (get().trafficTimestamp == null || !get().trafficPollingEnabled) {
+        void get().fetchTrafficState();
+      }
     } catch (error) {
       if (get().request.nearbyRequestId !== requestId) {
         return;
       }
-      const message = error instanceof Error ? error.message : "Failed to load nearby graph";
       set((state) => ({
-        network: { ...state.network, loadingNearby: false, error: message },
+        network: {
+          ...state.network,
+          loadingNearby: false,
+          error: errorMessage(error, "Failed to load nearby graph"),
+        },
       }));
     }
   },
@@ -294,24 +463,85 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }));
 
     try {
-      const rawPath = await graphApi.postShortestPath({
-        source: state.selection.sourceVertexId,
-        target: state.selection.targetVertexId,
-      });
+      let nextStaticPath = state.staticPath;
+      let nextTrafficPath = state.trafficPath;
+      const errors: string[] = [];
+
+      if (state.pathMode === "compare") {
+        const [staticResult, trafficResult] = await Promise.allSettled([
+          graphApi.postShortestPath({
+            source: state.selection.sourceVertexId,
+            target: state.selection.targetVertexId,
+          }),
+          graphApi.postTrafficShortestPath({
+            source: state.selection.sourceVertexId,
+            target: state.selection.targetVertexId,
+          }),
+        ]);
+
+        if (staticResult.status === "fulfilled") {
+          nextStaticPath = toPathData(staticResult.value, "static");
+        } else {
+          errors.push(errorMessage(staticResult.reason, "Failed to compute static path"));
+        }
+
+        if (trafficResult.status === "fulfilled") {
+          nextTrafficPath = toPathData(trafficResult.value, "traffic");
+        } else {
+          errors.push(errorMessage(trafficResult.reason, "Failed to compute traffic path"));
+        }
+      } else if (state.pathMode === "static") {
+        const rawStaticPath = await graphApi.postShortestPath({
+          source: state.selection.sourceVertexId,
+          target: state.selection.targetVertexId,
+        });
+        nextStaticPath = toPathData(rawStaticPath, "static");
+      } else {
+        const rawTrafficPath = await graphApi.postTrafficShortestPath({
+          source: state.selection.sourceVertexId,
+          target: state.selection.targetVertexId,
+        });
+        nextTrafficPath = toPathData(rawTrafficPath, "traffic");
+      }
+
       if (get().request.pathRequestId !== requestId) {
         return;
       }
+
+      const nextPath = resolveDisplayedPath(state.pathMode, nextStaticPath, nextTrafficPath);
+      const nextError = errors.length > 0 ? errors.join("; ") : null;
+
+      if (!nextPath) {
+        set((prev) => ({
+          network: {
+            ...prev.network,
+            loadingPath: false,
+            error: nextError ?? "No path found between source and target",
+          },
+        }));
+        return;
+      }
+
       set((prev) => ({
-        path: toPathData(rawPath),
-        network: { ...prev.network, loadingPath: false },
+        staticPath: nextStaticPath,
+        trafficPath: nextTrafficPath,
+        path: nextPath,
+        network: {
+          ...prev.network,
+          loadingPath: false,
+          error: nextError,
+        },
       }));
     } catch (error) {
       if (get().request.pathRequestId !== requestId) {
         return;
       }
-      const message = error instanceof Error ? error.message : "Failed to compute shortest path";
       set((prev) => ({
-        network: { ...prev.network, loadingPath: false, error: message },
+        network: {
+          ...prev.network,
+          loadingPath: false,
+          error: errorMessage(error, "Failed to compute shortest path"),
+        },
       }));
     }
   },

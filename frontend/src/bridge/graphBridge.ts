@@ -3,6 +3,9 @@ import type {
   NearbyResponse,
   PathData,
   ShortestPathResponse,
+  TrafficEdgeState,
+  TrafficShortestPathResponse,
+  TrafficStateResponse,
   Vertex,
 } from "@/types/graph";
 
@@ -32,12 +35,23 @@ export function toGraphData(raw: NearbyResponse): GraphData {
   };
 }
 
-export function toPathData(raw: ShortestPathResponse): PathData {
+export function toPathData(raw: ShortestPathResponse | TrafficShortestPathResponse, mode: "static" | "traffic"): PathData {
+  const hasTravelTime = "total_travel_time" in raw;
   return {
     vertexIds: raw.vertex_ids,
     edgeIds: raw.edge_ids,
     totalLength: raw.total_length,
+    mode,
+    totalTravelTime: hasTravelTime ? raw.total_travel_time : null,
   };
+}
+
+export function toTrafficEdgeMap(raw: TrafficStateResponse): Record<number, TrafficEdgeState> {
+  const map: Record<number, TrafficEdgeState> = {};
+  for (const edge of raw.edges) {
+    map[edge.id] = edge;
+  }
+  return map;
 }
 
 export function findVertexById(vertices: Vertex[], vertexId: number): Vertex | undefined {

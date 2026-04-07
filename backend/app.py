@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -16,8 +18,30 @@ from services.graph_engine import GraphEngine
 def create_app(n_vertices: int = 10_000, seed: int = 42) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.graph_engine = GraphEngine.from_random(n_vertices=n_vertices, seed=seed)
-        yield
+        engine = GraphEngine.from_random(n_vertices=n_vertices, seed=seed)
+        app.state.graph_engine = engine
+
+        stop_event = asyncio.Event()
+
+        async def _traffic_tick_loop() -> None:
+            while not stop_event.is_set():
+                engine.tick_traffic()
+                try:
+                    await asyncio.wait_for(
+                        stop_event.wait(),
+                        timeout=engine.traffic_tick_interval_seconds(),
+                    )
+                except TimeoutError:
+                    continue
+
+        tick_task = asyncio.create_task(_traffic_tick_loop())
+        try:
+            yield
+        finally:
+            stop_event.set()
+            tick_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await tick_task
 
     app = FastAPI(
         title="Data Homework API",

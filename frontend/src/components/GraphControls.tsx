@@ -11,12 +11,33 @@ export function GraphControls() {
   const meta = useGraphStore((state) => state.meta);
   const graph = useGraphStore((state) => state.graph);
   const path = useGraphStore((state) => state.path);
+  const staticPath = useGraphStore((state) => state.staticPath);
+  const trafficPath = useGraphStore((state) => state.trafficPath);
+  const pathMode = useGraphStore((state) => state.pathMode);
+  const trafficTimestamp = useGraphStore((state) => state.trafficTimestamp);
+  const trafficPollingEnabled = useGraphStore((state) => state.trafficPollingEnabled);
   const selection = useGraphStore((state) => state.selection);
   const network = useGraphStore((state) => state.network);
   const vertices = useGraphStore((state) => state.graph.vertices);
   const cluster = useGraphStore((state) => state.graph.cluster);
   const view = useGraphStore((state) => state.view);
   const zoomMax = getViewZoomMax();
+
+  const trafficSummary = useMemo(() => {
+    let green = 0;
+    let yellow = 0;
+    let red = 0;
+    for (const edge of graph.edges) {
+      if (edge.congestion_level === "green") {
+        green += 1;
+      } else if (edge.congestion_level === "yellow") {
+        yellow += 1;
+      } else if (edge.congestion_level === "red") {
+        red += 1;
+      }
+    }
+    return { green, yellow, red };
+  }, [graph.edges]);
 
   const selectedVertex = useMemo(() => {
     const selectedVertexId =
@@ -38,7 +59,24 @@ export function GraphControls() {
 
   const loadMeta = useGraphStore((state) => state.loadMeta);
   const loadNearby = useGraphStore((state) => state.loadNearby);
+  const fetchTrafficState = useGraphStore((state) => state.fetchTrafficState);
+  const setPathMode = useGraphStore((state) => state.setPathMode);
+  const setTrafficPollingEnabled = useGraphStore((state) => state.setTrafficPollingEnabled);
+  const startTrafficPolling = useGraphStore((state) => state.startTrafficPolling);
+  const stopTrafficPolling = useGraphStore((state) => state.stopTrafficPolling);
   const clearSelection = useGraphStore((state) => state.clearSelection);
+
+  useEffect(() => {
+    if (trafficPollingEnabled) {
+      startTrafficPolling(1000);
+    } else {
+      stopTrafficPolling();
+    }
+
+    return () => {
+      stopTrafficPolling();
+    };
+  }, [startTrafficPolling, stopTrafficPolling, trafficPollingEnabled]);
 
   const onLoad = async (event: FormEvent) => {
     event.preventDefault();
@@ -52,12 +90,13 @@ export function GraphControls() {
 
     await loadMeta();
     await loadNearby({ x: xx, y: yy, k: kk, zoom: view.zoom });
+    await fetchTrafficState();
   };
 
   return (
     <aside className="graph-controls">
-      <h1>M4 Graph Demo</h1>
-      <p className="subtitle">手动加载，缩放触发聚合，选 A/B 显示路径高亮</p>
+      <h1>M5 Graph Demo</h1>
+      <p className="subtitle">交通着色 + 静态/动态路径对比 + 轮询更新</p>
 
       <form className="control-form" onSubmit={onLoad}>
         <label>
@@ -82,8 +121,54 @@ export function GraphControls() {
       </button>
 
       <section className="status-block">
+        <h2>路径模式</h2>
+        <div className="mode-row">
+          <button
+            className={pathMode === "compare" ? "mode-btn active" : "mode-btn"}
+            onClick={() => setPathMode("compare")}
+            type="button"
+          >
+            对比
+          </button>
+          <button
+            className={pathMode === "static" ? "mode-btn active" : "mode-btn"}
+            onClick={() => setPathMode("static")}
+            type="button"
+          >
+            静态
+          </button>
+          <button
+            className={pathMode === "traffic" ? "mode-btn active" : "mode-btn"}
+            onClick={() => setPathMode("traffic")}
+            type="button"
+          >
+            动态
+          </button>
+        </div>
+      </section>
+
+      <section className="status-block">
+        <h2>交通刷新</h2>
+        <div className="traffic-actions">
+          <button disabled={network.loadingTraffic} onClick={() => void fetchTrafficState()} type="button">
+            {network.loadingTraffic ? "刷新中..." : "刷新交通状态"}
+          </button>
+          <label className="polling-toggle">
+            <input
+              checked={trafficPollingEnabled}
+              onChange={(event) => setTrafficPollingEnabled(event.target.checked)}
+              type="checkbox"
+            />
+            自动轮询(1s)
+          </label>
+        </div>
+        <p className="hint">traffic timestamp: {trafficTimestamp ? trafficTimestamp.toFixed(2) : "-"}</p>
+      </section>
+
+      <section className="status-block">
         <h2>状态</h2>
         <ul>
+          <li>path mode: {pathMode}</li>
           <li>phase: {selection.phase}</li>
           <li>A: {selection.sourceVertexId ?? "-"}</li>
           <li>B: {selection.targetVertexId ?? "-"}</li>
@@ -97,8 +182,11 @@ export function GraphControls() {
           <li>edges: {graph.edges.length}</li>
           <li>raw/display edges: {cluster.rawEdgeCount}/{cluster.displayEdgeCount}</li>
           <li>merged edges: {cluster.mergedEdgeCount}</li>
-          <li>path edges: {path?.edgeIds.length ?? 0}</li>
-          <li>path length: {path ? path.totalLength.toFixed(4) : "-"}</li>
+          <li>current path edges: {path?.edgeIds.length ?? 0}</li>
+          <li>static length: {staticPath ? staticPath.totalLength.toFixed(4) : "-"}</li>
+          <li>traffic length: {trafficPath ? trafficPath.totalLength.toFixed(4) : "-"}</li>
+          <li>traffic time: {trafficPath?.totalTravelTime != null ? trafficPath.totalTravelTime.toFixed(4) : "-"}</li>
+          <li>green/yellow/red: {trafficSummary.green}/{trafficSummary.yellow}/{trafficSummary.red}</li>
         </ul>
       </section>
 

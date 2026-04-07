@@ -15,6 +15,7 @@ from scipy.spatial import cKDTree
 
 from core.algorithms.dijkstra import shortest_path
 from core.graph import RoadGraph, build_adjacency, build_road_graph_from_points
+from core.simulator import TrafficSimulator
 from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, query_nearest_k
 
 
@@ -47,6 +48,13 @@ def _path_edge_ids(graph: RoadGraph, path: list[int]) -> list[int]:
         u, v = (a, b) if a < b else (b, a)
         out.append(lu[(u, v)])
     return out
+
+
+def _sum_edge_lengths(graph: RoadGraph, edge_ids: list[int]) -> float:
+    if not edge_ids:
+        return 0.0
+    idx = np.asarray(edge_ids, dtype=np.int64)
+    return float(np.sum(graph.edge_lengths[idx]))
 
 
 def _cluster_threshold_for_k(k: int) -> float:
@@ -168,6 +176,7 @@ class GraphEngine:
     graph: RoadGraph
     adj: list[list[tuple[int, int]]]
     _tree: cKDTree
+    traffic_simulator: TrafficSimulator | None = None
 
     @classmethod
     def from_random(cls, n_vertices: int = 10_000, seed: int = 42) -> GraphEngine:
@@ -175,7 +184,40 @@ class GraphEngine:
         g = build_road_graph_from_points(pts)
         adj = build_adjacency(g)
         tree = build_point_tree(g.points)
-        return cls(graph=g, adj=adj, _tree=tree)
+        simulator = TrafficSimulator(g, seed=seed + 17)
+        return cls(graph=g, adj=adj, _tree=tree, traffic_simulator=simulator)
+
+    def traffic_tick_interval_seconds(self) -> float:
+        if self.traffic_simulator is None:
+            return 0.5
+        return float(self.traffic_simulator.config.tick_interval_seconds)
+
+    def tick_traffic(self, dt: float | None = None) -> None:
+        if self.traffic_simulator is None:
+            return
+        if dt is None:
+            dt = self.traffic_simulator.config.tick_interval_seconds
+        self.traffic_simulator.tick(float(dt))
+
+    def get_traffic_state(self, edge_ids: Optional[list[int]] = None) -> dict[str, Any]:
+        if self.traffic_simulator is None:
+            raise RuntimeError("Traffic simulator is not initialized")
+        states = self.traffic_simulator.snapshot(edge_ids=edge_ids)
+        edges_out = [
+            {
+                "id": int(s.edge_id),
+                "capacity_v": float(s.capacity_v),
+                "vehicle_count_n": float(s.vehicle_count_n),
+                "load_ratio": float(s.load_ratio),
+                "dynamic_travel_time": float(s.dynamic_travel_time),
+                "congestion_level": s.congestion_level,
+            }
+            for s in states
+        ]
+        return {
+            "timestamp": float(self.traffic_simulator.timestamp),
+            "edges": edges_out,
+        }
 
     def get_meta(self) -> dict[str, Any]:
         g = self.graph
@@ -198,14 +240,26 @@ class GraphEngine:
         target: int,
         *,
         include_edges: bool = True,
+        use_traffic: bool = False,
     ) -> dict[str, Any]:
-        path, length = shortest_path(self.adj, self.graph.edge_lengths, source, target)
+        if use_traffic:
+            if self.traffic_simulator is None:
+                raise RuntimeError("Traffic simulator is not initialized")
+            edge_weights = self.traffic_simulator.dynamic_edge_weights()
+            path, total_travel_time = shortest_path(self.adj, edge_weights, source, target)
+        else:
+            path, total_travel_time = shortest_path(self.adj, self.graph.edge_lengths, source, target)
+
+        edge_ids = _path_edge_ids(self.graph, path) if path else []
+        total_length = _sum_edge_lengths(self.graph, edge_ids)
         out: dict[str, Any] = {
             "vertex_ids": path,
-            "total_length": float(length),
+            "total_length": float(total_length if use_traffic else total_travel_time),
         }
         if include_edges and path:
-            out["edge_ids"] = _path_edge_ids(self.graph, path)
+            out["edge_ids"] = edge_ids
+        if use_traffic:
+            out["total_travel_time"] = float(total_travel_time)
         return out
 
     def nearby(

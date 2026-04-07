@@ -5,6 +5,8 @@ import type {
   NearbyResponse,
   ShortestPathRequest,
   ShortestPathResponse,
+  TrafficShortestPathResponse,
+  TrafficStateResponse,
 } from "@/types/graph";
 
 export class GraphApiError extends Error {
@@ -48,6 +50,26 @@ export const graphApi = {
       const response = await httpClient.post<ShortestPathResponse>("/graph/shortest-path", payload, {
         signal,
       });
+      return response.data;
+    } catch (error) {
+      throw toGraphApiError(error);
+    }
+  },
+
+  async postTrafficShortestPath(payload: ShortestPathRequest, signal?: AbortSignal): Promise<TrafficShortestPathResponse> {
+    try {
+      const response = await httpClient.post<TrafficShortestPathResponse>("/graph/shortest-path/traffic", payload, {
+        signal,
+      });
+      return response.data;
+    } catch (error) {
+      throw toGraphApiError(error);
+    }
+  },
+
+  async getTrafficState(signal?: AbortSignal): Promise<TrafficStateResponse> {
+    try {
+      const response = await httpClient.get<TrafficStateResponse>("/graph/traffic/state", { signal });
       return response.data;
     } catch (error) {
       throw toGraphApiError(error);

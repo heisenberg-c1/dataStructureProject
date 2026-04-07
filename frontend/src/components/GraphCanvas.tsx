@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Application, Graphics } from "pixi.js";
 
 import { getViewZoomMax, useGraphStore, VIEW_ZOOM_MIN } from "@/store/graphStore";
-import type { Edge, Vertex, ViewState } from "@/types/graph";
+import type { CongestionLevel, Edge, PathData, Vertex, ViewState } from "@/types/graph";
 
 // World space is normalized to [0,1] and centered at (0.5, 0.5).
 function worldToScreen(vertex: Vertex, view: ViewState, width: number, height: number): { x: number; y: number } {
@@ -53,6 +53,46 @@ function pickNearestVertex(
   return bestId;
 }
 
+function congestionLevelFromRatio(ratio: number): CongestionLevel {
+  if (ratio <= 0.72) {
+    return "green";
+  }
+  if (ratio <= 1.0) {
+    return "yellow";
+  }
+  return "red";
+}
+
+function getEdgeCongestionLevel(edge: Edge, trafficEdgesById: Record<number, { load_ratio: number; congestion_level: CongestionLevel }>): CongestionLevel | null {
+  const traffic = trafficEdgesById[edge.id];
+  if (traffic?.congestion_level) {
+    return traffic.congestion_level;
+  }
+  if (edge.congestion_level) {
+    return edge.congestion_level;
+  }
+  if (typeof traffic?.load_ratio === "number") {
+    return congestionLevelFromRatio(traffic.load_ratio);
+  }
+  if (typeof edge.load_ratio === "number") {
+    return congestionLevelFromRatio(edge.load_ratio);
+  }
+  return null;
+}
+
+function edgeStrokeStyle(level: CongestionLevel | null): { color: number; alpha: number } {
+  if (level === "green") {
+    return { color: 0x22c55e, alpha: 0.7 };
+  }
+  if (level === "yellow") {
+    return { color: 0xeab308, alpha: 0.8 };
+  }
+  if (level === "red") {
+    return { color: 0xef4444, alpha: 0.9 };
+  }
+  return { color: 0x7a8598, alpha: 0.55 };
+}
+
 export function GraphCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
@@ -66,7 +106,10 @@ export function GraphCanvas() {
   const vertices = useGraphStore((state) => state.graph.vertices);
   const edges = useGraphStore((state) => state.graph.edges);
   const selection = useGraphStore((state) => state.selection);
-  const path = useGraphStore((state) => state.path);
+  const pathMode = useGraphStore((state) => state.pathMode);
+  const staticPath = useGraphStore((state) => state.staticPath);
+  const trafficPath = useGraphStore((state) => state.trafficPath);
+  const trafficEdgesById = useGraphStore((state) => state.trafficEdgesById);
   const view = useGraphStore((state) => state.view);
   const hoverVertexId = useGraphStore((state) => state.hover.vertexId);
   const hasLoadedGraph = useGraphStore((state) => state.graph.vertexIds.length > 0);
@@ -313,9 +356,12 @@ export function GraphCanvas() {
     const height = app.screen.height;
 
     edgesGraphics.clear();
-    edgesGraphics.lineStyle(1, 0x7a8598, 0.55);
 
     for (const edge of edges) {
+      const level = getEdgeCongestionLevel(edge, trafficEdgesById);
+      const stroke = edgeStrokeStyle(level);
+      edgesGraphics.lineStyle(1, stroke.color, stroke.alpha);
+
       if (edge.x1 != null && edge.y1 != null && edge.x2 != null && edge.y2 != null) {
         const p1 = worldXYToScreen(edge.x1, edge.y1, view, width, height);
         const p2 = worldXYToScreen(edge.x2, edge.y2, view, width, height);
@@ -359,9 +405,13 @@ export function GraphCanvas() {
     pathEdgesGraphics.clear();
     pathVerticesGraphics.clear();
 
-    if (path) {
-      pathEdgesGraphics.lineStyle(3, 0xff7b00, 0.92);
-      for (const edgeId of path.edgeIds) {
+    const drawPath = (route: PathData | null, color: number, widthPx: number, radius: number, alpha = 0.92) => {
+      if (!route) {
+        return;
+      }
+
+      pathEdgesGraphics.lineStyle(widthPx, color, alpha);
+      for (const edgeId of route.edgeIds) {
         const edge = edgeMap.get(edgeId);
         if (!edge) {
           continue;
@@ -384,18 +434,38 @@ export function GraphCanvas() {
         }
       }
 
-      for (const vertexId of path.vertexIds) {
+      for (const vertexId of route.vertexIds) {
         const vertex = vertexMap.get(vertexId);
         if (!vertex) {
           continue;
         }
         const point = worldToScreen(vertex, view, width, height);
-        pathVerticesGraphics.beginFill(0xff7b00, 1);
-        pathVerticesGraphics.drawCircle(point.x, point.y, 3.4);
+        pathVerticesGraphics.beginFill(color, 1);
+        pathVerticesGraphics.drawCircle(point.x, point.y, radius);
         pathVerticesGraphics.endFill();
       }
+    };
+
+    if (pathMode !== "traffic") {
+      drawPath(staticPath, 0x2d6cdf, 2.2, 2.8, 0.86);
     }
-  }, [edgeMap, edges, hoverVertexId, path, selection, vertexMap, vertices, view]);
+
+    if (pathMode !== "static") {
+      drawPath(trafficPath, 0xff7b00, 3.0, 3.4, 0.95);
+    }
+  }, [
+    edgeMap,
+    edges,
+    hoverVertexId,
+    pathMode,
+    selection,
+    staticPath,
+    trafficEdgesById,
+    trafficPath,
+    vertexMap,
+    vertices,
+    view,
+  ]);
 
   return <div className="graph-canvas" ref={containerRef} />;
 }

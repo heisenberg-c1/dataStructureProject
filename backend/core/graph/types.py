@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
 Adjacency = list[list[tuple[int, int]]]
 """邻接表：adj[v] = [(neighbor, edge_id), ...]"""
+
+CongestionLevel = Literal["green", "yellow", "red"]
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeTrafficState:
+    """单条边的交通状态快照。"""
+
+    edge_id: int
+    capacity_v: float
+    vehicle_count_n: float
+    load_ratio: float
+    dynamic_travel_time: float
+    congestion_level: CongestionLevel
 
 
 @dataclass(frozen=True, slots=True)

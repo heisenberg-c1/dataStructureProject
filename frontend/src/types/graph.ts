@@ -17,6 +17,19 @@ export interface Vertex {
   y: number;
 }
 
+export type CongestionLevel = "green" | "yellow" | "red";
+
+export type PathMode = "compare" | "static" | "traffic";
+
+export interface TrafficEdgeState {
+  id: number;
+  capacity_v: number;
+  vehicle_count_n: number;
+  load_ratio: number;
+  dynamic_travel_time: number;
+  congestion_level: CongestionLevel;
+}
+
 export interface Edge {
   id: number;
   u: number;
@@ -27,6 +40,11 @@ export interface Edge {
   y1?: number;
   x2?: number;
   y2?: number;
+  capacity_v?: number;
+  vehicle_count_n?: number;
+  load_ratio?: number;
+  dynamic_travel_time?: number;
+  congestion_level?: CongestionLevel;
 }
 
 export interface NearbyResponse {
@@ -72,6 +90,15 @@ export interface ShortestPathResponse {
   total_length: number;
 }
 
+export interface TrafficShortestPathResponse extends ShortestPathResponse {
+  total_travel_time: number;
+}
+
+export interface TrafficStateResponse {
+  timestamp: number;
+  edges: TrafficEdgeState[];
+}
+
 export interface ApiErrorShape {
   status: number;
   message: string;
@@ -95,6 +122,8 @@ export interface PathData {
   vertexIds: number[];
   edgeIds: number[];
   totalLength: number;
+  mode: Exclude<PathMode, "compare">;
+  totalTravelTime: number | null;
 }
 
 export interface GraphData {
