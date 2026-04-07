@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Application, Graphics } from "pixi.js";
 
-import { useGraphStore } from "@/store/graphStore";
+import { getViewZoomMax, useGraphStore, VIEW_ZOOM_MIN } from "@/store/graphStore";
 import type { Edge, Vertex, ViewState } from "@/types/graph";
 
+// World space is normalized to [0,1] and centered at (0.5, 0.5).
 function worldToScreen(vertex: Vertex, view: ViewState, width: number, height: number): { x: number; y: number } {
   return {
     x: (vertex.x - 0.5) * view.zoom + width / 2 + view.panX,
@@ -11,6 +12,14 @@ function worldToScreen(vertex: Vertex, view: ViewState, width: number, height: n
   };
 }
 
+function worldXYToScreen(x: number, y: number, view: ViewState, width: number, height: number): { x: number; y: number } {
+  return {
+    x: (x - 0.5) * view.zoom + width / 2 + view.panX,
+    y: (y - 0.5) * view.zoom + height / 2 + view.panY,
+  };
+}
+
+// Inverse of worldToScreen under the same view/viewport.
 function screenToWorld(screenX: number, screenY: number, view: ViewState, width: number, height: number): { x: number; y: number } {
   return {
     x: (screenX - width / 2 - view.panX) / view.zoom + 0.5,
@@ -60,6 +69,12 @@ export function GraphCanvas() {
   const path = useGraphStore((state) => state.path);
   const view = useGraphStore((state) => state.view);
   const hoverVertexId = useGraphStore((state) => state.hover.vertexId);
+  const hasLoadedGraph = useGraphStore((state) => state.graph.vertexIds.length > 0);
+  const currentGraphZoom = useGraphStore((state) => state.graph.cluster.zoom);
+  const currentClustered = useGraphStore((state) => state.graph.cluster.clustered);
+  const currentClusterThreshold = useGraphStore((state) => state.graph.cluster.threshold);
+  const loadingNearby = useGraphStore((state) => state.network.loadingNearby);
+  const reloadNearbyForCurrentZoom = useGraphStore((state) => state.reloadNearbyForCurrentZoom);
 
   useEffect(() => {
     verticesRef.current = vertices;
@@ -98,6 +113,7 @@ export function GraphCanvas() {
     containerRef.current.appendChild(app.view as HTMLCanvasElement);
     const canvas = app.view as HTMLCanvasElement;
     canvas.style.display = "block";
+    canvas.style.touchAction = "none";
 
     const edgesGraphics = new Graphics();
     const verticesGraphics = new Graphics();
@@ -195,13 +211,24 @@ export function GraphCanvas() {
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
+      event.stopPropagation();
+
+      if (event.currentTarget !== canvas) {
+        return;
+      }
+
       const rect = canvas.getBoundingClientRect();
       const sx = event.clientX - rect.left;
       const sy = event.clientY - rect.top;
 
       const current = useGraphStore.getState().view;
       const direction = event.deltaY > 0 ? 0.9 : 1.1;
-      const nextZoom = current.zoom * direction;
+      const maxZoom = getViewZoomMax();
+      const nextZoom = Math.max(VIEW_ZOOM_MIN, Math.min(maxZoom, current.zoom * direction));
+
+      if (nextZoom === current.zoom) {
+        return;
+      }
 
       const world = screenToWorld(sx, sy, current, app.screen.width, app.screen.height);
       const nextPanX = sx - app.screen.width / 2 - (world.x - 0.5) * nextZoom;
@@ -242,6 +269,36 @@ export function GraphCanvas() {
   }, []);
 
   useEffect(() => {
+    if (!hasLoadedGraph || loadingNearby) {
+      return;
+    }
+
+    const zoomDelta = currentGraphZoom == null ? Number.POSITIVE_INFINITY : Math.abs(currentGraphZoom - view.zoom);
+    const significantDelta = Math.max(80, view.zoom * 0.06);
+    const nowClustered = currentClusterThreshold == null ? false : view.zoom < currentClusterThreshold;
+    const crossedBoundary = currentClusterThreshold != null && nowClustered !== currentClustered;
+
+    if (!crossedBoundary && zoomDelta < significantDelta) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void reloadNearbyForCurrentZoom();
+    }, 140);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    currentClusterThreshold,
+    currentClustered,
+    currentGraphZoom,
+    hasLoadedGraph,
+    loadingNearby,
+    reloadNearbyForCurrentZoom,
+    view.zoom,
+  ]);
+
+  useEffect(() => {
     const app = appRef.current;
     const edgesGraphics = edgesGraphicsRef.current;
     const verticesGraphics = verticesGraphicsRef.current;
@@ -259,15 +316,22 @@ export function GraphCanvas() {
     edgesGraphics.lineStyle(1, 0x7a8598, 0.55);
 
     for (const edge of edges) {
-      const from = vertexMap.get(edge.u);
-      const to = vertexMap.get(edge.v);
-      if (!from || !to) {
-        continue;
+      if (edge.x1 != null && edge.y1 != null && edge.x2 != null && edge.y2 != null) {
+        const p1 = worldXYToScreen(edge.x1, edge.y1, view, width, height);
+        const p2 = worldXYToScreen(edge.x2, edge.y2, view, width, height);
+        edgesGraphics.moveTo(p1.x, p1.y);
+        edgesGraphics.lineTo(p2.x, p2.y);
+      } else {
+        const from = vertexMap.get(edge.u);
+        const to = vertexMap.get(edge.v);
+        if (!from || !to) {
+          continue;
+        }
+        const p1 = worldToScreen(from, view, width, height);
+        const p2 = worldToScreen(to, view, width, height);
+        edgesGraphics.moveTo(p1.x, p1.y);
+        edgesGraphics.lineTo(p2.x, p2.y);
       }
-      const p1 = worldToScreen(from, view, width, height);
-      const p2 = worldToScreen(to, view, width, height);
-      edgesGraphics.moveTo(p1.x, p1.y);
-      edgesGraphics.lineTo(p2.x, p2.y);
     }
 
     verticesGraphics.clear();
@@ -302,15 +366,22 @@ export function GraphCanvas() {
         if (!edge) {
           continue;
         }
-        const from = vertexMap.get(edge.u);
-        const to = vertexMap.get(edge.v);
-        if (!from || !to) {
-          continue;
+        if (edge.x1 != null && edge.y1 != null && edge.x2 != null && edge.y2 != null) {
+          const p1 = worldXYToScreen(edge.x1, edge.y1, view, width, height);
+          const p2 = worldXYToScreen(edge.x2, edge.y2, view, width, height);
+          pathEdgesGraphics.moveTo(p1.x, p1.y);
+          pathEdgesGraphics.lineTo(p2.x, p2.y);
+        } else {
+          const from = vertexMap.get(edge.u);
+          const to = vertexMap.get(edge.v);
+          if (!from || !to) {
+            continue;
+          }
+          const p1 = worldToScreen(from, view, width, height);
+          const p2 = worldToScreen(to, view, width, height);
+          pathEdgesGraphics.moveTo(p1.x, p1.y);
+          pathEdgesGraphics.lineTo(p2.x, p2.y);
         }
-        const p1 = worldToScreen(from, view, width, height);
-        const p2 = worldToScreen(to, view, width, height);
-        pathEdgesGraphics.moveTo(p1.x, p1.y);
-        pathEdgesGraphics.lineTo(p2.x, p2.y);
       }
 
       for (const vertexId of path.vertexIds) {

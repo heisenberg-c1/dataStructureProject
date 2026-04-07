@@ -36,6 +36,11 @@ class EdgeDTO(BaseModel):
 	u: int
 	v: int
 	length: float
+	aggregated_count: int | None = None
+	x1: float | None = None
+	y1: float | None = None
+	x2: float | None = None
+	y2: float | None = None
 
 
 class NearbyResponse(BaseModel):
@@ -43,6 +48,17 @@ class NearbyResponse(BaseModel):
 	vertices: list[VertexDTO]
 	edges: list[EdgeDTO]
 	incident_edge_count: int
+	clustered: bool = False
+	cluster_mode: str = "none"
+	raw_vertex_count: int | None = None
+	display_vertex_count: int | None = None
+	raw_edge_count: int | None = None
+	display_edge_count: int | None = None
+	merged_edge_count: int | None = None
+	cluster_threshold: float | None = None
+	zoom: float | None = None
+	cluster_cell_size: float | None = None
+	cluster_leaf_count: int | None = None
 
 
 class ShortestPathRequest(BaseModel):
@@ -82,7 +98,7 @@ async def get_nearby_graph(
 	x: float = Query(..., description="Query center x in world coordinates"),
 	y: float = Query(..., description="Query center y in world coordinates"),
 	k: int = Query(100, ge=1, le=10_000, description="Nearest vertex count"),
-	zoom: float | None = Query(None, description="Reserved for M4 clustering"),
+	zoom: float | None = Query(None, description="Current camera zoom; low zoom enables M4 grid clustering"),
 ) -> dict[str, Any]:
 	"""M2/F1: nearest k vertices and their incident edges."""
 	return _get_engine(request).nearby(center_xy=(x, y), k=k, zoom=zoom)

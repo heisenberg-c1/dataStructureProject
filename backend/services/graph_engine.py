@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Optional
 
 import numpy as np
@@ -15,6 +16,13 @@ from scipy.spatial import cKDTree
 from core.algorithms.dijkstra import shortest_path
 from core.graph import RoadGraph, build_adjacency, build_road_graph_from_points
 from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, query_nearest_k
+
+
+CLUSTER_ZOOM_THRESHOLD_BASE = 1000.0
+CLUSTER_MAX_THRESHOLD_SCALE = 4.0
+CLUSTER_MIN_LEAF_POINTS = 6
+CLUSTER_MAX_LEAF_POINTS = 32
+CLUSTER_MAX_DEPTH = 9
 
 
 def random_planar_points(n: int, seed: int = 42) -> NDArray[np.float64]:
@@ -39,6 +47,120 @@ def _path_edge_ids(graph: RoadGraph, path: list[int]) -> list[int]:
         u, v = (a, b) if a < b else (b, a)
         out.append(lu[(u, v)])
     return out
+
+
+def _cluster_threshold_for_k(k: int) -> float:
+    scale = math.sqrt(max(1, k) / 100.0)
+    scaled = max(1.0, min(CLUSTER_MAX_THRESHOLD_SCALE, scale))
+    return CLUSTER_ZOOM_THRESHOLD_BASE * scaled
+
+
+def _quadtree_cluster_vertex_ids(
+    points: NDArray[np.float64],
+    vertex_ids: NDArray[np.int64],
+    *,
+    zoom: float,
+    threshold: float,
+) -> tuple[list[int], dict[int, int], float, int]:
+    """基于四叉树自适应聚合，返回代表点与原始点到代表点映射。"""
+    ids = [int(v) for v in vertex_ids]
+    if not ids:
+        return [], {}, 0.0, 0
+
+    ratio = max(0.0, min(1.0, zoom / max(threshold, 1.0)))
+    # 缩得越小（ratio 越低）每个叶子容纳点越多，从而代表点更少。
+    leaf_capacity = int(
+        round(
+            CLUSTER_MIN_LEAF_POINTS
+            + (CLUSTER_MAX_LEAF_POINTS - CLUSTER_MIN_LEAF_POINTS) * (1.0 - ratio)
+        )
+    )
+    leaf_capacity = max(CLUSTER_MIN_LEAF_POINTS, min(CLUSTER_MAX_LEAF_POINTS, leaf_capacity))
+
+    xs = points[vertex_ids, 0]
+    ys = points[vertex_ids, 1]
+    min_x = float(xs.min())
+    max_x = float(xs.max())
+    min_y = float(ys.min())
+    max_y = float(ys.max())
+
+    # 避免退化边界导致递归无法继续分裂。
+    eps = 1e-9
+    if max_x - min_x < eps:
+        max_x = min_x + eps
+    if max_y - min_y < eps:
+        max_y = min_y + eps
+
+    leaves: list[tuple[list[int], tuple[float, float, float, float]]] = []
+
+    def _split(node_ids: list[int], bounds: tuple[float, float, float, float], depth: int) -> None:
+        x0, y0, x1, y1 = bounds
+        if len(node_ids) <= leaf_capacity or depth >= CLUSTER_MAX_DEPTH:
+            leaves.append((node_ids, bounds))
+            return
+
+        width = x1 - x0
+        height = y1 - y0
+        if width <= eps or height <= eps:
+            leaves.append((node_ids, bounds))
+            return
+
+        mx = (x0 + x1) * 0.5
+        my = (y0 + y1) * 0.5
+
+        quadrants: list[tuple[list[int], tuple[float, float, float, float]]] = [
+            ([], (x0, y0, mx, my)),
+            ([], (mx, y0, x1, my)),
+            ([], (x0, my, mx, y1)),
+            ([], (mx, my, x1, y1)),
+        ]
+
+        for vid in node_ids:
+            px = float(points[vid, 0])
+            py = float(points[vid, 1])
+            if py < my:
+                idx = 0 if px < mx else 1
+            else:
+                idx = 2 if px < mx else 3
+            quadrants[idx][0].append(vid)
+
+        non_empty = [(q_ids, q_bounds) for q_ids, q_bounds in quadrants if q_ids]
+        if len(non_empty) <= 1:
+            leaves.append((node_ids, bounds))
+            return
+
+        for q_ids, q_bounds in non_empty:
+            _split(q_ids, q_bounds, depth + 1)
+
+    _split(ids, (min_x, min_y, max_x, max_y), 0)
+
+    representatives: list[int] = []
+    vertex_to_rep: dict[int, int] = {}
+    leaf_spans: list[float] = []
+
+    for leaf_ids, bounds in leaves:
+        x0, y0, x1, y1 = bounds
+        cx = (x0 + x1) * 0.5
+        cy = (y0 + y1) * 0.5
+
+        best_vid = leaf_ids[0]
+        best_dist2 = float("inf")
+        for vid in leaf_ids:
+            dx = float(points[vid, 0]) - cx
+            dy = float(points[vid, 1]) - cy
+            d2 = dx * dx + dy * dy
+            if d2 < best_dist2:
+                best_dist2 = d2
+                best_vid = vid
+
+        representatives.append(best_vid)
+        for vid in leaf_ids:
+            vertex_to_rep[vid] = best_vid
+
+        leaf_spans.append(max(x1 - x0, y1 - y0))
+
+    avg_span = float(sum(leaf_spans) / len(leaf_spans)) if leaf_spans else 0.0
+    return representatives, vertex_to_rep, avg_span, len(leaves)
 
 
 @dataclass
@@ -93,24 +215,74 @@ class GraphEngine:
         *,
         zoom: Optional[float] = None,
     ) -> dict[str, Any]:
-        """最近 k 个顶点及其关联边（F1）；zoom 预留供 M4 聚合。"""
-        _ = zoom
+        """最近 k 个顶点及其关联边；低 zoom 启用代表点聚合（M4/F2）。"""
         g = self.graph
-        idx = query_nearest_k(self._tree, center_xy, k=k, n_vertices=g.n_vertices)
-        eids = edges_incident_to_vertices(self.adj, idx)
-        verts = [{"id": int(i), "x": float(g.points[i, 0]), "y": float(g.points[i, 1])} for i in idx]
+        raw_idx = query_nearest_k(self._tree, center_xy, k=k, n_vertices=g.n_vertices)
+        raw_idx_list = [int(i) for i in raw_idx]
+        raw_idx_set = set(raw_idx_list)
+
+        cluster_threshold = _cluster_threshold_for_k(k)
+        should_cluster = zoom is not None and zoom < cluster_threshold
+        idx_list = raw_idx_list
+        vertex_to_rep: dict[int, int] = {vid: vid for vid in raw_idx_list}
+        cluster_cell_size: float | None = None
+        cluster_leaf_count: int | None = None
+        cluster_mode = "none"
+
+        if should_cluster:
+            reps, vertex_to_rep, cluster_cell_size, cluster_leaf_count = _quadtree_cluster_vertex_ids(
+                g.points,
+                raw_idx,
+                zoom=float(zoom),
+                threshold=cluster_threshold,
+            )
+            reps.sort(key=lambda vid: (g.points[vid, 0] - center_xy[0]) ** 2 + (g.points[vid, 1] - center_xy[1]) ** 2)
+            idx_list = reps
+            cluster_mode = "quadtree"
+
+        idx = np.asarray(idx_list, dtype=np.int64)
+
+        source_idx = raw_idx if should_cluster else idx
+        candidate_eids = edges_incident_to_vertices(self.adj, source_idx)
+        filtered_eids: list[int] = []
+        for eid in candidate_eids:
+            u = int(g.edges[eid, 0])
+            v = int(g.edges[eid, 1])
+            if u in raw_idx_set and v in raw_idx_set:
+                filtered_eids.append(int(eid))
+
+        raw_edge_count = len(filtered_eids)
+        merged_edge_count = 0
         edges_out = [
             {
                 "id": int(eid),
                 "u": int(g.edges[eid, 0]),
                 "v": int(g.edges[eid, 1]),
                 "length": float(g.edge_lengths[eid]),
+                "aggregated_count": 1,
+                "x1": float(g.points[int(g.edges[eid, 0]), 0]),
+                "y1": float(g.points[int(g.edges[eid, 0]), 1]),
+                "x2": float(g.points[int(g.edges[eid, 1]), 0]),
+                "y2": float(g.points[int(g.edges[eid, 1]), 1]),
             }
-            for eid in eids
+            for eid in filtered_eids
         ]
+
+        verts = [{"id": int(i), "x": float(g.points[i, 0]), "y": float(g.points[i, 1])} for i in idx]
         return {
-            "vertex_ids": [int(x) for x in idx],
+            "vertex_ids": idx_list,
             "vertices": verts,
             "edges": edges_out,
-            "incident_edge_count": len(eids),
+            "incident_edge_count": len(edges_out),
+            "clustered": should_cluster,
+            "cluster_mode": cluster_mode,
+            "raw_vertex_count": int(raw_idx.shape[0]),
+            "display_vertex_count": len(idx_list),
+            "raw_edge_count": raw_edge_count,
+            "display_edge_count": len(edges_out),
+            "merged_edge_count": merged_edge_count,
+            "cluster_threshold": cluster_threshold,
+            "zoom": float(zoom) if zoom is not None else None,
+            "cluster_cell_size": cluster_cell_size,
+            "cluster_leaf_count": cluster_leaf_count,
         }

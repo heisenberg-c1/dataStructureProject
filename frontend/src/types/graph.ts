@@ -22,6 +22,11 @@ export interface Edge {
   u: number;
   v: number;
   length: number;
+  aggregated_count?: number;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
 }
 
 export interface NearbyResponse {
@@ -29,6 +34,31 @@ export interface NearbyResponse {
   vertices: Vertex[];
   edges: Edge[];
   incident_edge_count: number;
+  clustered?: boolean;
+  cluster_mode?: string;
+  raw_vertex_count?: number;
+  display_vertex_count?: number;
+  raw_edge_count?: number;
+  display_edge_count?: number;
+  merged_edge_count?: number;
+  cluster_threshold?: number;
+  zoom?: number | null;
+  cluster_cell_size?: number | null;
+  cluster_leaf_count?: number | null;
+}
+
+export interface ClusterInfo {
+  clustered: boolean;
+  mode: string;
+  rawVertexCount: number;
+  displayVertexCount: number;
+  rawEdgeCount: number;
+  displayEdgeCount: number;
+  mergedEdgeCount: number;
+  threshold: number | null;
+  zoom: number | null;
+  cellSize: number | null;
+  leafCount: number | null;
 }
 
 export interface ShortestPathRequest {
@@ -72,6 +102,7 @@ export interface GraphData {
   edges: Edge[];
   vertexIds: number[];
   incidentEdgeCount: number;
+  cluster: ClusterInfo;
 }
 
 export interface LoadNearbyParams {

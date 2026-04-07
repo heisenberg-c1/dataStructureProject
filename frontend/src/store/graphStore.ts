@@ -23,6 +23,16 @@ interface RequestState {
   pathRequestId: number;
 }
 
+interface NearbyQueryState {
+  x: number;
+  y: number;
+  k: number;
+}
+
+interface LoadNearbyOptions {
+  preserveSelection?: boolean;
+}
+
 interface HoverState {
   vertexId: number | null;
 }
@@ -36,6 +46,7 @@ interface GraphStoreState {
   hover: HoverState;
   network: NetworkState;
   request: RequestState;
+  lastNearbyQuery: NearbyQueryState | null;
 
   setView: (view: Partial<ViewState>) => void;
   setHover: (vertexId: number | null) => void;
@@ -44,7 +55,8 @@ interface GraphStoreState {
   selectVertex: (vertexId: number) => void;
 
   loadMeta: () => Promise<void>;
-  loadNearby: (params: LoadNearbyParams) => Promise<void>;
+  loadNearby: (params: LoadNearbyParams, options?: LoadNearbyOptions) => Promise<void>;
+  reloadNearbyForCurrentZoom: () => Promise<void>;
   computeShortestPath: () => Promise<void>;
 }
 
@@ -53,6 +65,19 @@ const initialGraph: GraphData = {
   edges: [],
   vertexIds: [],
   incidentEdgeCount: 0,
+  cluster: {
+    clustered: false,
+    mode: "none",
+    rawVertexCount: 0,
+    displayVertexCount: 0,
+    rawEdgeCount: 0,
+    displayEdgeCount: 0,
+    mergedEdgeCount: 0,
+    threshold: null,
+    zoom: null,
+    cellSize: null,
+    leafCount: null,
+  },
 };
 
 const initialSelection: SelectionState = {
@@ -67,8 +92,23 @@ const initialView: ViewState = {
   panY: 0,
 };
 
+export const VIEW_ZOOM_MIN = 120;
+export const VIEW_ZOOM_MAX = 12000;
+
+const VIEW_ZOOM_BASE_MAX = 5000;
+
+export function getViewZoomMax(): number {
+  if (typeof window === "undefined") {
+    return VIEW_ZOOM_BASE_MAX;
+  }
+  const shortSide = Math.max(1, Math.min(window.innerWidth, window.innerHeight));
+  const dpr = window.devicePixelRatio || 1;
+  const suggested = Math.round(shortSide * 16 * dpr);
+  return Math.max(VIEW_ZOOM_BASE_MAX, Math.min(VIEW_ZOOM_MAX, suggested));
+}
+
 function clampZoom(value: number): number {
-  return Math.max(120, Math.min(5000, value));
+  return Math.max(VIEW_ZOOM_MIN, Math.min(getViewZoomMax(), value));
 }
 
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
@@ -88,6 +128,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     nearbyRequestId: 0,
     pathRequestId: 0,
   },
+  lastNearbyQuery: null,
 
   setView: (viewPatch) => {
     set((state) => ({
@@ -180,19 +221,31 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }
   },
 
-  loadNearby: async (params) => {
+  loadNearby: async (params, options) => {
     const requestId = get().request.nearbyRequestId + 1;
+    const state = get();
+    const preserveSelection = Boolean(options?.preserveSelection);
+    const query: NearbyQueryState = {
+      x: params.x,
+      y: params.y,
+      k: params.k,
+    };
+    const requestParams: LoadNearbyParams = {
+      ...params,
+      zoom: params.zoom ?? state.view.zoom,
+    };
 
     set((state) => ({
       request: { ...state.request, nearbyRequestId: requestId },
       network: { ...state.network, loadingNearby: true, error: null },
-      selection: initialSelection,
-      path: null,
-      hover: { vertexId: null },
+      lastNearbyQuery: query,
+      selection: preserveSelection ? state.selection : initialSelection,
+      path: preserveSelection ? state.path : null,
+      hover: preserveSelection ? state.hover : { vertexId: null },
     }));
 
     try {
-      const nearby = await graphApi.getNearby(params);
+      const nearby = await graphApi.getNearby(requestParams);
       if (get().request.nearbyRequestId !== requestId) {
         return;
       }
@@ -209,6 +262,17 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         network: { ...state.network, loadingNearby: false, error: message },
       }));
     }
+  },
+
+  reloadNearbyForCurrentZoom: async () => {
+    const state = get();
+    if (!state.lastNearbyQuery || state.network.loadingNearby) {
+      return;
+    }
+    await get().loadNearby({
+      ...state.lastNearbyQuery,
+      zoom: state.view.zoom,
+    }, { preserveSelection: true });
   },
 
   computeShortestPath: async () => {

@@ -109,6 +109,7 @@ button.secondary {
 	min-width: 0;
 	min-height: 0;
 	padding: 16px;
+	overflow: hidden;
 	background: #f8fafc;
 }
 
@@ -126,6 +127,7 @@ button.secondary {
 	display: block;
 	width: 100%;
 	height: 100%;
+	touch-action: none;
 }
 
 @media (max-width: 980px) {

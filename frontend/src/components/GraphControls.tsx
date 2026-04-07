@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
-import { useGraphStore } from "@/store/graphStore";
+import { getViewZoomMax, useGraphStore } from "@/store/graphStore";
 
 export function GraphControls() {
   const [x, setX] = useState("0.50");
@@ -14,6 +14,9 @@ export function GraphControls() {
   const selection = useGraphStore((state) => state.selection);
   const network = useGraphStore((state) => state.network);
   const vertices = useGraphStore((state) => state.graph.vertices);
+  const cluster = useGraphStore((state) => state.graph.cluster);
+  const view = useGraphStore((state) => state.view);
+  const zoomMax = getViewZoomMax();
 
   const selectedVertex = useMemo(() => {
     const selectedVertexId =
@@ -48,13 +51,13 @@ export function GraphControls() {
     }
 
     await loadMeta();
-    await loadNearby({ x: xx, y: yy, k: kk });
+    await loadNearby({ x: xx, y: yy, k: kk, zoom: view.zoom });
   };
 
   return (
     <aside className="graph-controls">
-      <h1>M3 Graph Demo</h1>
-      <p className="subtitle">手动加载，选 A/B，显示路径高亮</p>
+      <h1>M4 Graph Demo</h1>
+      <p className="subtitle">手动加载，缩放触发聚合，选 A/B 显示路径高亮</p>
 
       <form className="control-form" onSubmit={onLoad}>
         <label>
@@ -86,7 +89,14 @@ export function GraphControls() {
           <li>B: {selection.targetVertexId ?? "-"}</li>
           <li>active point: {selectedVertex ? `${selectedVertex.x.toFixed(4)}, ${selectedVertex.y.toFixed(4)}` : "-"}</li>
           <li>vertices: {graph.vertices.length}</li>
+          <li>zoom: {view.zoom.toFixed(1)}</li>
+          <li>zoom max: {zoomMax.toFixed(0)}</li>
+          <li>clustered: {cluster.clustered ? "yes" : "no"}</li>
+          <li>cluster mode: {cluster.mode}</li>
+          <li>raw/display: {cluster.rawVertexCount}/{cluster.displayVertexCount}</li>
           <li>edges: {graph.edges.length}</li>
+          <li>raw/display edges: {cluster.rawEdgeCount}/{cluster.displayEdgeCount}</li>
+          <li>merged edges: {cluster.mergedEdgeCount}</li>
           <li>path edges: {path?.edgeIds.length ?? 0}</li>
           <li>path length: {path ? path.totalLength.toFixed(4) : "-"}</li>
         </ul>
@@ -98,6 +108,8 @@ export function GraphControls() {
           <li>n_vertices: {meta?.n_vertices ?? "-"}</li>
           <li>n_edges: {meta?.n_edges ?? "-"}</li>
           <li>incident_edge_count: {graph.incidentEdgeCount}</li>
+          <li>cluster threshold: {cluster.threshold?.toFixed(1) ?? "-"}</li>
+          <li>cluster leaves: {cluster.leafCount ?? "-"}</li>
         </ul>
       </section>
 
