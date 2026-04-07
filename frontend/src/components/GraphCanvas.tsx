@@ -34,7 +34,7 @@ function pickNearestVertex(
   view: ViewState,
   width: number,
   height: number,
-  threshold = 10,
+  threshold = 12,
 ): number | null {
   let bestId: number | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -99,8 +99,11 @@ export function GraphCanvas() {
   const verticesRef = useRef<Vertex[]>([]);
 
   const edgesGraphicsRef = useRef<Graphics | null>(null);
+  const vertexHalosGraphicsRef = useRef<Graphics | null>(null);
   const verticesGraphicsRef = useRef<Graphics | null>(null);
+  const vertexRingsGraphicsRef = useRef<Graphics | null>(null);
   const pathEdgesGraphicsRef = useRef<Graphics | null>(null);
+  const pathVerticesOutlineGraphicsRef = useRef<Graphics | null>(null);
   const pathVerticesGraphicsRef = useRef<Graphics | null>(null);
 
   const vertices = useGraphStore((state) => state.graph.vertices);
@@ -159,18 +162,27 @@ export function GraphCanvas() {
     canvas.style.touchAction = "none";
 
     const edgesGraphics = new Graphics();
+    const vertexHalosGraphics = new Graphics();
     const verticesGraphics = new Graphics();
+    const vertexRingsGraphics = new Graphics();
     const pathEdgesGraphics = new Graphics();
+    const pathVerticesOutlineGraphics = new Graphics();
     const pathVerticesGraphics = new Graphics();
 
     edgesGraphicsRef.current = edgesGraphics;
+    vertexHalosGraphicsRef.current = vertexHalosGraphics;
     verticesGraphicsRef.current = verticesGraphics;
+    vertexRingsGraphicsRef.current = vertexRingsGraphics;
     pathEdgesGraphicsRef.current = pathEdgesGraphics;
+    pathVerticesOutlineGraphicsRef.current = pathVerticesOutlineGraphics;
     pathVerticesGraphicsRef.current = pathVerticesGraphics;
 
     app.stage.addChild(edgesGraphics);
     app.stage.addChild(pathEdgesGraphics);
+    app.stage.addChild(vertexHalosGraphics);
     app.stage.addChild(verticesGraphics);
+    app.stage.addChild(vertexRingsGraphics);
+    app.stage.addChild(pathVerticesOutlineGraphics);
     app.stage.addChild(pathVerticesGraphics);
 
     let dragging = false;
@@ -232,7 +244,7 @@ export function GraphCanvas() {
           useGraphStore.getState().view,
           app.screen.width,
           app.screen.height,
-          12,
+          14,
         );
         if (nearest != null) {
           useGraphStore.getState().selectVertex(nearest);
@@ -298,15 +310,21 @@ export function GraphCanvas() {
       canvas.removeEventListener("wheel", onWheel);
 
       edgesGraphics.destroy();
+      vertexHalosGraphics.destroy();
       verticesGraphics.destroy();
+      vertexRingsGraphics.destroy();
       pathEdgesGraphics.destroy();
+      pathVerticesOutlineGraphics.destroy();
       pathVerticesGraphics.destroy();
 
       app.destroy(true, true);
       appRef.current = null;
       edgesGraphicsRef.current = null;
+      vertexHalosGraphicsRef.current = null;
       verticesGraphicsRef.current = null;
+      vertexRingsGraphicsRef.current = null;
       pathEdgesGraphicsRef.current = null;
+      pathVerticesOutlineGraphicsRef.current = null;
       pathVerticesGraphicsRef.current = null;
     };
   }, []);
@@ -344,11 +362,14 @@ export function GraphCanvas() {
   useEffect(() => {
     const app = appRef.current;
     const edgesGraphics = edgesGraphicsRef.current;
+    const vertexHalosGraphics = vertexHalosGraphicsRef.current;
     const verticesGraphics = verticesGraphicsRef.current;
+    const vertexRingsGraphics = vertexRingsGraphicsRef.current;
     const pathEdgesGraphics = pathEdgesGraphicsRef.current;
+    const pathVerticesOutlineGraphics = pathVerticesOutlineGraphicsRef.current;
     const pathVerticesGraphics = pathVerticesGraphicsRef.current;
 
-    if (!app || !edgesGraphics || !verticesGraphics || !pathEdgesGraphics || !pathVerticesGraphics) {
+    if (!app || !edgesGraphics || !vertexHalosGraphics || !verticesGraphics || !vertexRingsGraphics || !pathEdgesGraphics || !pathVerticesOutlineGraphics || !pathVerticesGraphics) {
       return;
     }
 
@@ -380,32 +401,80 @@ export function GraphCanvas() {
       }
     }
 
+    vertexHalosGraphics.clear();
     verticesGraphics.clear();
+    vertexRingsGraphics.clear();
     for (const vertex of vertices) {
       const point = worldToScreen(vertex, view, width, height);
-      let color = 0xd8dde6;
-      let radius = 2.4;
+      let coreColor = 0x96a2b3;
+      let coreRadius = 2.6;
+      const coreAlpha = 0.96;
+      let ringColor = 0x334155;
+      let ringRadius = 3.8;
+      let ringWidth = 0.85;
+      let ringAlpha = 0.22;
+      let haloColor: number | null = null;
+      let haloRadius = 0;
+      let haloAlpha = 0;
 
       if (selection.sourceVertexId === vertex.id) {
-        color = 0x1f9d55;
-        radius = 4.5;
+        coreColor = 0x16a34a;
+        coreRadius = 4.8;
+        ringColor = 0x14532d;
+        ringRadius = 6.1;
+        ringWidth = 1.2;
+        ringAlpha = 0.92;
+        haloColor = 0x22c55e;
+        haloRadius = 8.2;
+        haloAlpha = 0.23;
       } else if (selection.targetVertexId === vertex.id) {
-        color = 0x2d6cdf;
-        radius = 4.5;
+        coreColor = 0x2563eb;
+        coreRadius = 4.8;
+        ringColor = 0x1e3a8a;
+        ringRadius = 6.1;
+        ringWidth = 1.2;
+        ringAlpha = 0.92;
+        haloColor = 0x3b82f6;
+        haloRadius = 8.2;
+        haloAlpha = 0.23;
       } else if (hoverVertexId === vertex.id) {
-        color = 0xffc857;
-        radius = 3.8;
+        coreColor = 0xfbbf24;
+        coreRadius = 4.2;
+        ringColor = 0xb45309;
+        ringRadius = 5.4;
+        ringWidth = 1.1;
+        ringAlpha = 0.9;
+        haloColor = 0xf59e0b;
+        haloRadius = 7.4;
+        haloAlpha = 0.2;
       }
 
-      verticesGraphics.beginFill(color, 1);
-      verticesGraphics.drawCircle(point.x, point.y, radius);
+      if (haloColor != null) {
+        vertexHalosGraphics.beginFill(haloColor, haloAlpha);
+        vertexHalosGraphics.drawCircle(point.x, point.y, haloRadius);
+        vertexHalosGraphics.endFill();
+      }
+
+      verticesGraphics.beginFill(coreColor, coreAlpha);
+      verticesGraphics.drawCircle(point.x, point.y, coreRadius);
       verticesGraphics.endFill();
+
+      vertexRingsGraphics.lineStyle(ringWidth, ringColor, ringAlpha);
+      vertexRingsGraphics.drawCircle(point.x, point.y, ringRadius);
     }
 
     pathEdgesGraphics.clear();
+    pathVerticesOutlineGraphics.clear();
     pathVerticesGraphics.clear();
 
-    const drawPath = (route: PathData | null, color: number, widthPx: number, radius: number, alpha = 0.92) => {
+    const drawPath = (
+      route: PathData | null,
+      color: number,
+      outlineColor: number,
+      widthPx: number,
+      radius: number,
+      alpha = 0.92,
+    ) => {
       if (!route) {
         return;
       }
@@ -440,6 +509,8 @@ export function GraphCanvas() {
           continue;
         }
         const point = worldToScreen(vertex, view, width, height);
+        pathVerticesOutlineGraphics.lineStyle(1.15, outlineColor, 0.88);
+        pathVerticesOutlineGraphics.drawCircle(point.x, point.y, radius + 0.95);
         pathVerticesGraphics.beginFill(color, 1);
         pathVerticesGraphics.drawCircle(point.x, point.y, radius);
         pathVerticesGraphics.endFill();
@@ -447,11 +518,11 @@ export function GraphCanvas() {
     };
 
     if (pathMode !== "traffic") {
-      drawPath(staticPath, 0x2d6cdf, 2.2, 2.8, 0.86);
+      drawPath(staticPath, 0x2d6cdf, 0x1e3a8a, 2.2, 2.9, 0.86);
     }
 
     if (pathMode !== "static") {
-      drawPath(trafficPath, 0xff7b00, 3.0, 3.4, 0.95);
+      drawPath(trafficPath, 0xff7b00, 0x9a3412, 3.0, 3.5, 0.95);
     }
   }, [
     edgeMap,

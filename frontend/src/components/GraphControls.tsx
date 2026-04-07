@@ -16,6 +16,8 @@ export function GraphControls() {
   const pathMode = useGraphStore((state) => state.pathMode);
   const trafficTimestamp = useGraphStore((state) => state.trafficTimestamp);
   const trafficPollingEnabled = useGraphStore((state) => state.trafficPollingEnabled);
+  const trafficTransportMode = useGraphStore((state) => state.trafficTransportMode);
+  const trafficConnectionState = useGraphStore((state) => state.trafficConnectionState);
   const selection = useGraphStore((state) => state.selection);
   const network = useGraphStore((state) => state.network);
   const vertices = useGraphStore((state) => state.graph.vertices);
@@ -62,21 +64,21 @@ export function GraphControls() {
   const fetchTrafficState = useGraphStore((state) => state.fetchTrafficState);
   const setPathMode = useGraphStore((state) => state.setPathMode);
   const setTrafficPollingEnabled = useGraphStore((state) => state.setTrafficPollingEnabled);
-  const startTrafficPolling = useGraphStore((state) => state.startTrafficPolling);
-  const stopTrafficPolling = useGraphStore((state) => state.stopTrafficPolling);
+  const connectTrafficStream = useGraphStore((state) => state.connectTrafficStream);
+  const disconnectTrafficStream = useGraphStore((state) => state.disconnectTrafficStream);
   const clearSelection = useGraphStore((state) => state.clearSelection);
 
   useEffect(() => {
     if (trafficPollingEnabled) {
-      startTrafficPolling(1000);
+      void connectTrafficStream();
     } else {
-      stopTrafficPolling();
+      disconnectTrafficStream();
     }
 
     return () => {
-      stopTrafficPolling();
+      disconnectTrafficStream();
     };
-  }, [startTrafficPolling, stopTrafficPolling, trafficPollingEnabled]);
+  }, [connectTrafficStream, disconnectTrafficStream, trafficPollingEnabled]);
 
   const onLoad = async (event: FormEvent) => {
     event.preventDefault();
@@ -96,7 +98,7 @@ export function GraphControls() {
   return (
     <aside className="graph-controls">
       <h1>M5 Graph Demo</h1>
-      <p className="subtitle">交通着色 + 静态/动态路径对比 + 轮询更新</p>
+      <p className="subtitle">交通着色 + 静态/动态路径对比 + WebSocket 实时更新</p>
 
       <form className="control-form" onSubmit={onLoad}>
         <label>
@@ -148,7 +150,7 @@ export function GraphControls() {
       </section>
 
       <section className="status-block">
-        <h2>交通刷新</h2>
+        <h2>交通更新</h2>
         <div className="traffic-actions">
           <button disabled={network.loadingTraffic} onClick={() => void fetchTrafficState()} type="button">
             {network.loadingTraffic ? "刷新中..." : "刷新交通状态"}
@@ -159,10 +161,12 @@ export function GraphControls() {
               onChange={(event) => setTrafficPollingEnabled(event.target.checked)}
               type="checkbox"
             />
-            自动轮询(1s)
+            自动实时更新(WS优先)
           </label>
         </div>
         <p className="hint">traffic timestamp: {trafficTimestamp ? trafficTimestamp.toFixed(2) : "-"}</p>
+        <p className="hint">transport: {trafficTransportMode}</p>
+        <p className="hint">connection: {trafficConnectionState}</p>
       </section>
 
       <section className="status-block">

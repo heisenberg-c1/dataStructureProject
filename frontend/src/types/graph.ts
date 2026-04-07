@@ -21,6 +21,10 @@ export type CongestionLevel = "green" | "yellow" | "red";
 
 export type PathMode = "compare" | "static" | "traffic";
 
+export type TrafficTransportMode = "off" | "websocket" | "polling";
+
+export type TrafficConnectionState = "idle" | "connecting" | "open" | "reconnecting" | "polling" | "closed";
+
 export interface TrafficEdgeState {
   id: number;
   capacity_v: number;

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { toGraphData, toPathData, toTrafficEdgeMap } from "@/bridge/graphBridge";
 import { graphApi } from "@/api/graphApi";
+import { TrafficWsClient } from "@/api/trafficWsClient";
 import type {
   Edge,
   GraphData,
@@ -10,7 +11,10 @@ import type {
   PathMode,
   PathData,
   SelectionState,
+  TrafficConnectionState,
   TrafficEdgeState,
+  TrafficStateResponse,
+  TrafficTransportMode,
   ViewState,
 } from "@/types/graph";
 
@@ -54,6 +58,9 @@ interface GraphStoreState {
   trafficPollingEnabled: boolean;
   trafficPollingIntervalMs: number;
   trafficPollingTimerId: number | null;
+  trafficTransportMode: TrafficTransportMode;
+  trafficConnectionState: TrafficConnectionState;
+  trafficLastSeq: number;
   selection: SelectionState;
   view: ViewState;
   hover: HoverState;
@@ -65,6 +72,8 @@ interface GraphStoreState {
   setView: (view: Partial<ViewState>) => void;
   setHover: (vertexId: number | null) => void;
   setTrafficPollingEnabled: (enabled: boolean) => void;
+  connectTrafficStream: () => Promise<void>;
+  disconnectTrafficStream: () => void;
   fetchTrafficState: () => Promise<void>;
   startTrafficPolling: (intervalMs?: number) => void;
   stopTrafficPolling: () => void;
@@ -160,6 +169,34 @@ function resolveDisplayedPath(mode: PathMode, staticPath: PathData | null, traff
   return trafficPath ?? staticPath;
 }
 
+function applyTrafficSnapshot(
+  state: GraphStoreState,
+  traffic: TrafficStateResponse,
+): Pick<GraphStoreState, "trafficTimestamp" | "trafficEdgesById" | "graph"> {
+  const edgesById = toTrafficEdgeMap(traffic);
+  return {
+    trafficTimestamp: traffic.timestamp,
+    trafficEdgesById: edgesById,
+    graph: {
+      ...state.graph,
+      edges: applyTrafficToEdges(state.graph.edges, edgesById),
+    },
+  };
+}
+
+function defaultTrafficWsUrl(): string {
+  const explicit = import.meta.env.VITE_TRAFFIC_WS_URL;
+  if (typeof explicit === "string" && explicit.length > 0) {
+    return explicit;
+  }
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+  const wsBase = apiBaseUrl.replace(/^http/i, "ws").replace(/\/$/, "");
+  return `${wsBase}/ws/traffic`;
+}
+
+let trafficWsClient: TrafficWsClient | null = null;
+let manualWsDisconnect = false;
+
 export const useGraphStore = create<GraphStoreState>((set, get) => ({
   meta: null,
   graph: initialGraph,
@@ -172,6 +209,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   trafficPollingEnabled: true,
   trafficPollingIntervalMs: 1000,
   trafficPollingTimerId: null,
+  trafficTransportMode: "off",
+  trafficConnectionState: "idle",
+  trafficLastSeq: 0,
   selection: initialSelection,
   view: initialView,
   hover: { vertexId: null },
@@ -221,10 +261,152 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   setTrafficPollingEnabled: (enabled) => {
     set(() => ({ trafficPollingEnabled: enabled }));
     if (enabled) {
-      get().startTrafficPolling();
+      void get().connectTrafficStream();
       return;
     }
+    get().disconnectTrafficStream();
+  },
+
+  connectTrafficStream: async () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!get().trafficPollingEnabled) {
+      return;
+    }
+    if (trafficWsClient?.isOpen()) {
+      return;
+    }
+
+    manualWsDisconnect = false;
     get().stopTrafficPolling();
+
+    set((state) => ({
+      trafficTransportMode: "websocket",
+      trafficConnectionState: "connecting",
+      network: {
+        ...state.network,
+        error: null,
+      },
+    }));
+
+    if (trafficWsClient) {
+      trafficWsClient.disconnect();
+      trafficWsClient = null;
+    }
+
+    trafficWsClient = new TrafficWsClient({
+      url: defaultTrafficWsUrl(),
+      throttleMs: get().trafficPollingIntervalMs,
+      onStatus: (status, detail, manual) => {
+        if (manual || manualWsDisconnect || !get().trafficPollingEnabled) {
+          return;
+        }
+
+        if (status === "open") {
+          get().stopTrafficPolling();
+          set((state) => ({
+            trafficTransportMode: "websocket",
+            trafficConnectionState: "open",
+            network: {
+              ...state.network,
+              error: null,
+            },
+          }));
+          return;
+        }
+
+        if (status === "connecting" || status === "reconnecting") {
+          if (get().trafficPollingTimerId == null) {
+            get().startTrafficPolling(get().trafficPollingIntervalMs);
+          }
+          set((state) => ({
+            trafficTransportMode: "polling",
+            trafficConnectionState: status,
+            network: {
+              ...state.network,
+              error: detail ?? state.network.error,
+            },
+          }));
+          return;
+        }
+
+        set((state) => ({
+          trafficTransportMode: "polling",
+          trafficConnectionState: "closed",
+          network: {
+            ...state.network,
+            error: detail ?? state.network.error,
+          },
+        }));
+        if (get().trafficPollingTimerId == null) {
+          get().startTrafficPolling(get().trafficPollingIntervalMs);
+        }
+      },
+      onTrafficState: (traffic, seq) => {
+        const state = get();
+        if (typeof seq === "number" && seq <= state.trafficLastSeq) {
+          return;
+        }
+
+        get().stopTrafficPolling();
+        set((prev) => ({
+          ...applyTrafficSnapshot(prev, traffic),
+          trafficLastSeq: typeof seq === "number" ? seq : prev.trafficLastSeq + 1,
+          trafficTransportMode: "websocket",
+          trafficConnectionState: "open",
+          network: {
+            ...prev.network,
+            loadingTraffic: false,
+          },
+        }));
+      },
+      onError: (message) => {
+        if (!get().trafficPollingEnabled) {
+          return;
+        }
+        set((state) => ({
+          network: {
+            ...state.network,
+            error: message,
+          },
+        }));
+      },
+    });
+
+    try {
+      await trafficWsClient.connect();
+    } catch (error) {
+      if (!get().trafficPollingEnabled) {
+        return;
+      }
+      set((state) => ({
+        trafficTransportMode: "polling",
+        trafficConnectionState: "closed",
+        network: {
+          ...state.network,
+          error: errorMessage(error, "Traffic websocket unavailable; fallback to polling"),
+        },
+      }));
+      get().startTrafficPolling(get().trafficPollingIntervalMs);
+    }
+  },
+
+  disconnectTrafficStream: () => {
+    manualWsDisconnect = true;
+    if (trafficWsClient) {
+      trafficWsClient.disconnect();
+      trafficWsClient = null;
+    }
+    get().stopTrafficPolling();
+    set((state) => ({
+      trafficTransportMode: "off",
+      trafficConnectionState: "idle",
+      network: {
+        ...state.network,
+        loadingTraffic: false,
+      },
+    }));
   },
 
   startTrafficPolling: (intervalMs) => {
@@ -233,6 +415,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }
     const state = get();
     const nextInterval = intervalMs ?? state.trafficPollingIntervalMs;
+    if (state.trafficPollingTimerId != null && nextInterval === state.trafficPollingIntervalMs) {
+      return;
+    }
     if (state.trafficPollingTimerId != null) {
       window.clearInterval(state.trafficPollingTimerId);
     }
@@ -242,6 +427,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     set(() => ({
       trafficPollingTimerId: timerId,
       trafficPollingIntervalMs: nextInterval,
+      trafficTransportMode: "polling",
+      trafficConnectionState: "polling",
     }));
     void get().fetchTrafficState();
   },
@@ -269,14 +456,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       if (get().request.trafficRequestId !== requestId) {
         return;
       }
-      const edgesById = toTrafficEdgeMap(traffic);
       set((state) => ({
-        trafficTimestamp: traffic.timestamp,
-        trafficEdgesById: edgesById,
-        graph: {
-          ...state.graph,
-          edges: applyTrafficToEdges(state.graph.edges, edgesById),
-        },
+        ...applyTrafficSnapshot(state, traffic),
         network: { ...state.network, loadingTraffic: false },
       }));
     } catch (error) {
@@ -416,7 +597,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
         },
         network: { ...state.network, loadingNearby: false },
       }));
-      if (get().trafficTimestamp == null || !get().trafficPollingEnabled) {
+      if (get().trafficTransportMode !== "websocket" && (get().trafficTimestamp == null || !get().trafficPollingEnabled)) {
         void get().fetchTrafficState();
       }
     } catch (error) {
