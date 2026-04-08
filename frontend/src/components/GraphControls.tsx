@@ -22,7 +22,7 @@ export function GraphControls() {
   const network = useGraphStore((state) => state.network);
   const vertices = useGraphStore((state) => state.graph.vertices);
   const cluster = useGraphStore((state) => state.graph.cluster);
-  const view = useGraphStore((state) => state.view);
+  const viewZoom = useGraphStore((state) => state.view.zoom);
   const zoomMax = getViewZoomMax();
 
   const trafficSummary = useMemo(() => {
@@ -91,7 +91,7 @@ export function GraphControls() {
     }
 
     await loadMeta();
-    await loadNearby({ x: xx, y: yy, k: kk, zoom: view.zoom });
+    await loadNearby({ x: xx, y: yy, k: kk, zoom: viewZoom });
     await fetchTrafficState();
   };
 
@@ -178,7 +178,7 @@ export function GraphControls() {
           <li>B: {selection.targetVertexId ?? "-"}</li>
           <li>active point: {selectedVertex ? `${selectedVertex.x.toFixed(4)}, ${selectedVertex.y.toFixed(4)}` : "-"}</li>
           <li>vertices: {graph.vertices.length}</li>
-          <li>zoom: {view.zoom.toFixed(1)}</li>
+          <li>zoom: {viewZoom.toFixed(1)}</li>
           <li>zoom max: {zoomMax.toFixed(0)}</li>
           <li>clustered: {cluster.clustered ? "yes" : "no"}</li>
           <li>cluster mode: {cluster.mode}</li>

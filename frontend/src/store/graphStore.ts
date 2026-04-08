@@ -245,17 +245,32 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   },
 
   setView: (viewPatch) => {
-    set((state) => ({
-      view: {
+    set((state) => {
+      const nextView: ViewState = {
         zoom: clampZoom(viewPatch.zoom ?? state.view.zoom),
         panX: viewPatch.panX ?? state.view.panX,
         panY: viewPatch.panY ?? state.view.panY,
-      },
-    }));
+      };
+
+      if (
+        nextView.zoom === state.view.zoom &&
+        nextView.panX === state.view.panX &&
+        nextView.panY === state.view.panY
+      ) {
+        return state;
+      }
+
+      return { view: nextView };
+    });
   },
 
   setHover: (vertexId) => {
-    set(() => ({ hover: { vertexId } }));
+    set((state) => {
+      if (state.hover.vertexId === vertexId) {
+        return state;
+      }
+      return { hover: { vertexId } };
+    });
   },
 
   setTrafficPollingEnabled: (enabled) => {
