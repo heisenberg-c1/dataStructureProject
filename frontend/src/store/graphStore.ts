@@ -16,7 +16,7 @@ import type {
   TrafficStateResponse,
   TrafficTransportMode,
   ViewState,
-} from "@/types/graph";
+} from "@/types";
 
 interface NetworkState {
   loadingMeta: boolean;

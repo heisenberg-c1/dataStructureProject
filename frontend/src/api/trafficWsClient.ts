@@ -1,4 +1,4 @@
-import type { TrafficStateResponse } from "@/types/graph";
+import type { TrafficStateResponse } from "@/types";
 
 export type TrafficWsStatus = "connecting" | "open" | "reconnecting" | "closed";
 

@@ -7,7 +7,7 @@ import type {
   TrafficShortestPathResponse,
   TrafficStateResponse,
   Vertex,
-} from "@/types/graph";
+} from "@/types";
 
 export function toGraphData(raw: NearbyResponse): GraphData {
   const rawCount = raw.raw_vertex_count ?? raw.vertex_ids.length;

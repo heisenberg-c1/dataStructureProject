@@ -7,7 +7,7 @@ import type {
   ShortestPathResponse,
   TrafficShortestPathResponse,
   TrafficStateResponse,
-} from "@/types/graph";
+} from "@/types";
 
 export class GraphApiError extends Error {
   status: number;

@@ -34,60 +34,17 @@
 	gap: 12px;
 }
 
-.control-form label {
+.control-form > div {
 	display: grid;
 	gap: 6px;
 	font-size: 0.95rem;
 	color: #334155;
 }
 
-.control-form input {
-	border: 1px solid #d2d6dc;
-	background: #ffffff;
-	color: #102a43;
-	border-radius: 10px;
-	padding: 10px 12px;
-	font-size: 0.95rem;
-}
-
-button {
-	border: 1px solid #3b82f6;
-	background: #3b82f6;
-	color: #ffffff;
-	border-radius: 10px;
-	padding: 10px 14px;
-	cursor: pointer;
-	font-weight: 700;
-}
-
-button:disabled {
-	opacity: 0.65;
-	cursor: not-allowed;
-}
-
-button.secondary {
-	background: #f8fafc;
-	color: #102a43;
-	border-color: #cbd5e1;
-}
-
 .mode-row {
 	display: grid;
 	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 8px;
-}
-
-.mode-btn {
-	background: #ffffff;
-	color: #1e293b;
-	border: 1px solid #cbd5e1;
-	font-weight: 600;
-}
-
-.mode-btn.active {
-	background: #1d4ed8;
-	border-color: #1d4ed8;
-	color: #ffffff;
 }
 
 .traffic-actions {
@@ -101,10 +58,6 @@ button.secondary {
 	gap: 8px;
 	font-size: 0.9rem;
 	color: #334155;
-}
-
-.polling-toggle input {
-	accent-color: #1d4ed8;
 }
 
 .status-block {

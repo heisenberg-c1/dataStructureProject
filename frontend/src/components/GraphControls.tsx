@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { getViewZoomMax, useGraphStore } from "@/store/graphStore";
 
 export function GraphControls() {
@@ -50,15 +55,6 @@ export function GraphControls() {
     return vertices.find((vertex) => vertex.id === selectedVertexId) ?? null;
   }, [selection.phase, selection.sourceVertexId, selection.targetVertexId, vertices]);
 
-  useEffect(() => {
-    if (!selectedVertex) {
-      return;
-    }
-
-    setX(selectedVertex.x.toFixed(4));
-    setY(selectedVertex.y.toFixed(4));
-  }, [selectedVertex]);
-
   const loadMeta = useGraphStore((state) => state.loadMeta);
   const loadNearby = useGraphStore((state) => state.loadNearby);
   const fetchTrafficState = useGraphStore((state) => state.fetchTrafficState);
@@ -95,71 +91,91 @@ export function GraphControls() {
     await fetchTrafficState();
   };
 
+  const fillFromSelection = () => {
+    if (!selectedVertex) {
+      return;
+    }
+    setX(selectedVertex.x.toFixed(4));
+    setY(selectedVertex.y.toFixed(4));
+  };
+
   return (
     <aside className="graph-controls">
       <h1>M5 Graph Demo</h1>
       <p className="subtitle">交通着色 + 静态/动态路径对比 + WebSocket 实时更新</p>
 
       <form className="control-form" onSubmit={onLoad}>
-        <label>
-          x
-          <input value={x} onChange={(event) => setX(event.target.value)} />
-        </label>
-        <label>
-          y
-          <input value={y} onChange={(event) => setY(event.target.value)} />
-        </label>
-        <label>
-          k
-          <input value={k} onChange={(event) => setK(event.target.value)} />
-        </label>
-        <button disabled={network.loadingNearby || network.loadingMeta} type="submit">
+        <div>
+          <Label htmlFor="graph-x">x</Label>
+          <Input id="graph-x" value={x} onChange={(event) => setX(event.target.value)} />
+        </div>
+        <div>
+          <Label htmlFor="graph-y">y</Label>
+          <Input id="graph-y" value={y} onChange={(event) => setY(event.target.value)} />
+        </div>
+        <div>
+          <Label htmlFor="graph-k">k</Label>
+          <Input id="graph-k" value={k} onChange={(event) => setK(event.target.value)} />
+        </div>
+        <Button disabled={network.loadingNearby || network.loadingMeta} type="submit">
           {network.loadingNearby || network.loadingMeta ? "加载中..." : "加载附近点边"}
-        </button>
+        </Button>
+        <Button disabled={!selectedVertex} onClick={fillFromSelection} type="button" variant="outline">
+          使用当前选中点坐标
+        </Button>
       </form>
 
-      <button className="secondary" onClick={clearSelection} type="button">
+      <Button onClick={clearSelection} type="button" variant="secondary">
         清空选择/路径
-      </button>
+      </Button>
 
-      <section className="status-block">
-        <h2>路径模式</h2>
+      <Card className="status-block">
+        <CardHeader>
+          <CardTitle>路径模式</CardTitle>
+        </CardHeader>
+        <CardContent>
         <div className="mode-row">
-          <button
-            className={pathMode === "compare" ? "mode-btn active" : "mode-btn"}
+          <Button
             onClick={() => setPathMode("compare")}
+            size="sm"
             type="button"
+            variant={pathMode === "compare" ? "default" : "outline"}
           >
             对比
-          </button>
-          <button
-            className={pathMode === "static" ? "mode-btn active" : "mode-btn"}
+          </Button>
+          <Button
             onClick={() => setPathMode("static")}
+            size="sm"
             type="button"
+            variant={pathMode === "static" ? "default" : "outline"}
           >
             静态
-          </button>
-          <button
-            className={pathMode === "traffic" ? "mode-btn active" : "mode-btn"}
+          </Button>
+          <Button
             onClick={() => setPathMode("traffic")}
+            size="sm"
             type="button"
+            variant={pathMode === "traffic" ? "default" : "outline"}
           >
             动态
-          </button>
+          </Button>
         </div>
-      </section>
+        </CardContent>
+      </Card>
 
-      <section className="status-block">
-        <h2>交通更新</h2>
+      <Card className="status-block">
+        <CardHeader>
+          <CardTitle>交通更新</CardTitle>
+        </CardHeader>
+        <CardContent>
         <div className="traffic-actions">
-          <button disabled={network.loadingTraffic} onClick={() => void fetchTrafficState()} type="button">
+          <Button disabled={network.loadingTraffic} onClick={() => void fetchTrafficState()} type="button" variant="outline">
             {network.loadingTraffic ? "刷新中..." : "刷新交通状态"}
-          </button>
+          </Button>
           <label className="polling-toggle">
-            <input
+            <Switch
               checked={trafficPollingEnabled}
-              onChange={(event) => setTrafficPollingEnabled(event.target.checked)}
-              type="checkbox"
+              onCheckedChange={(checked) => setTrafficPollingEnabled(Boolean(checked))}
             />
             自动实时更新(WS优先)
           </label>
@@ -167,10 +183,14 @@ export function GraphControls() {
         <p className="hint">traffic timestamp: {trafficTimestamp ? trafficTimestamp.toFixed(2) : "-"}</p>
         <p className="hint">transport: {trafficTransportMode}</p>
         <p className="hint">connection: {trafficConnectionState}</p>
-      </section>
+        </CardContent>
+      </Card>
 
-      <section className="status-block">
-        <h2>状态</h2>
+      <Card className="status-block">
+        <CardHeader>
+          <CardTitle>状态</CardTitle>
+        </CardHeader>
+        <CardContent>
         <ul>
           <li>path mode: {pathMode}</li>
           <li>phase: {selection.phase}</li>
@@ -192,10 +212,14 @@ export function GraphControls() {
           <li>traffic time: {trafficPath?.totalTravelTime != null ? trafficPath.totalTravelTime.toFixed(4) : "-"}</li>
           <li>green/yellow/red: {trafficSummary.green}/{trafficSummary.yellow}/{trafficSummary.red}</li>
         </ul>
-      </section>
+        </CardContent>
+      </Card>
 
-      <section className="status-block">
-        <h2>图元信息</h2>
+      <Card className="status-block">
+        <CardHeader>
+          <CardTitle>图元信息</CardTitle>
+        </CardHeader>
+        <CardContent>
         <ul>
           <li>n_vertices: {meta?.n_vertices ?? "-"}</li>
           <li>n_edges: {meta?.n_edges ?? "-"}</li>
@@ -203,7 +227,8 @@ export function GraphControls() {
           <li>cluster threshold: {cluster.threshold?.toFixed(1) ?? "-"}</li>
           <li>cluster leaves: {cluster.leafCount ?? "-"}</li>
         </ul>
-      </section>
+        </CardContent>
+      </Card>
 
       {network.loadingPath ? <p className="hint">正在计算最短路...</p> : null}
       {network.error ? <p className="error">{network.error}</p> : null}
