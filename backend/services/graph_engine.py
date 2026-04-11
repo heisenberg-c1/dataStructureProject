@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 
 from core.algorithms.dijkstra import shortest_path
 from core.graph import RoadGraph, build_adjacency, build_road_graph_from_points
-from core.simulator import TrafficSimulator
+from core.simulator import TrafficConfig, TrafficSimulator
 from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, query_nearest_k
 
 
@@ -179,12 +179,18 @@ class GraphEngine:
     traffic_simulator: TrafficSimulator | None = None
 
     @classmethod
-    def from_random(cls, n_vertices: int = 10_000, seed: int = 42) -> GraphEngine:
+    def from_random(
+        cls,
+        n_vertices: int = 10_000,
+        seed: int = 42,
+        *,
+        traffic_config: TrafficConfig | None = None,
+    ) -> GraphEngine:
         pts = random_planar_points(n_vertices, seed=seed)
         g = build_road_graph_from_points(pts)
         adj = build_adjacency(g)
         tree = build_point_tree(g.points)
-        simulator = TrafficSimulator(g, seed=seed + 17)
+        simulator = TrafficSimulator(g, seed=seed + 17, config=traffic_config)
         return cls(graph=g, adj=adj, _tree=tree, traffic_simulator=simulator)
 
     def traffic_tick_interval_seconds(self) -> float:
@@ -218,6 +224,11 @@ class GraphEngine:
             "timestamp": float(self.traffic_simulator.timestamp),
             "edges": edges_out,
         }
+
+    def get_traffic_stats(self) -> dict[str, float]:
+        if self.traffic_simulator is None:
+            raise RuntimeError("Traffic simulator is not initialized")
+        return self.traffic_simulator.congestion_stats()
 
     def get_meta(self) -> dict[str, Any]:
         g = self.graph

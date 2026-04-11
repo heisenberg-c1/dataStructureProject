@@ -44,6 +44,10 @@ export interface TrafficStateResponse {
 	edges: TrafficEdgeState[];
 }
 
+export interface RebuildGraphRequest {
+	n_vertices: number;
+}
+
 export interface LoadNearbyParams {
 	x: number;
 	y: number;

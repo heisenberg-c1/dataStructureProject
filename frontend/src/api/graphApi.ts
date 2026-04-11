@@ -3,6 +3,7 @@ import type {
   GraphMetaResponse,
   LoadNearbyParams,
   NearbyResponse,
+  RebuildGraphRequest,
   ShortestPathRequest,
   ShortestPathResponse,
   TrafficShortestPathResponse,
@@ -27,6 +28,17 @@ export const graphApi = {
   async getMeta(signal?: AbortSignal): Promise<GraphMetaResponse> {
     try {
       const response = await httpClient.get<GraphMetaResponse>("/graph/meta", { signal });
+      return response.data;
+    } catch (error) {
+      throw toGraphApiError(error);
+    }
+  },
+
+  async postRebuildGraph(payload: RebuildGraphRequest, signal?: AbortSignal): Promise<GraphMetaResponse> {
+    try {
+      const response = await httpClient.post<GraphMetaResponse>("/graph/rebuild", payload, {
+        signal,
+      });
       return response.data;
     } catch (error) {
       throw toGraphApiError(error);

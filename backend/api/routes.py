@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -23,6 +24,14 @@ class GraphMetaResponse(BaseModel):
 	n_vertices: int
 	n_edges: int
 	bounds: Bounds
+
+
+class RebuildGraphRequest(BaseModel):
+	n_vertices: int = Field(
+		ge=10_000,
+		le=50_000,
+		description="Target vertex count for graph rebuilding",
+	)
 
 
 class VertexDTO(BaseModel):
@@ -103,10 +112,48 @@ def _get_engine(request: Request) -> GraphEngine:
 	return engine
 
 
+def _get_engine_lock(request: Request) -> asyncio.Lock:
+	lock = getattr(request.app.state, "graph_engine_lock", None)
+	if isinstance(lock, asyncio.Lock):
+		return lock
+
+	created_lock = asyncio.Lock()
+	request.app.state.graph_engine_lock = created_lock
+	return created_lock
+
+
 @router.get("/meta", response_model=GraphMetaResponse)
 async def get_graph_meta(request: Request) -> dict[str, Any]:
 	"""M2: graph metadata without sending full graph."""
 	return _get_engine(request).get_meta()
+
+
+@router.post("/rebuild", response_model=GraphMetaResponse)
+async def post_rebuild_graph(
+	request: Request,
+	payload: RebuildGraphRequest,
+) -> dict[str, Any]:
+	"""M2: rebuild graph by target vertex count."""
+	lock = _get_engine_lock(request)
+	async with lock:
+		current_engine = _get_engine(request)
+		traffic_config = None
+		if current_engine.traffic_simulator is not None:
+			traffic_config = current_engine.traffic_simulator.config
+
+		current_seed = int(getattr(request.app.state, "graph_seed", 42))
+		next_seed = current_seed + 1
+
+		next_engine = await asyncio.to_thread(
+			GraphEngine.from_random,
+			n_vertices=payload.n_vertices,
+			seed=next_seed,
+			traffic_config=traffic_config,
+		)
+		request.app.state.graph_engine = next_engine
+		request.app.state.graph_seed = next_seed
+
+	return next_engine.get_meta()
 
 
 @router.get("/nearby", response_model=NearbyResponse)
@@ -114,7 +161,7 @@ async def get_nearby_graph(
 	request: Request,
 	x: float = Query(..., description="Query center x in world coordinates"),
 	y: float = Query(..., description="Query center y in world coordinates"),
-	k: int = Query(100, ge=1, le=10_000, description="Nearest vertex count"),
+	k: int = Query(100, ge=100, le=50_000, description="Nearest vertex count"),
 	zoom: float | None = Query(None, description="Current camera zoom; low zoom enables M4 grid clustering"),
 ) -> dict[str, Any]:
 	"""M2/F1: nearest k vertices and their incident edges."""

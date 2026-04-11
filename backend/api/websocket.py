@@ -77,9 +77,9 @@ async def _receive_client_messages(
 @router.websocket("/ws/traffic")
 async def traffic_ws(websocket: WebSocket) -> None:
 	"""Push traffic snapshots over websocket for real-time updates."""
-	engine = _get_engine(websocket)
 	await websocket.accept()
-	if engine is None:
+	initial_engine = _get_engine(websocket)
+	if initial_engine is None:
 		await websocket.send_json(
 			{
 				"type": "error",
@@ -90,7 +90,7 @@ async def traffic_ws(websocket: WebSocket) -> None:
 		await websocket.close(code=1011)
 		return
 
-	config = _TrafficWsSessionConfig(push_interval_seconds=max(0.2, engine.traffic_tick_interval_seconds()))
+	config = _TrafficWsSessionConfig(push_interval_seconds=max(0.2, initial_engine.traffic_tick_interval_seconds()))
 	stop_event = asyncio.Event()
 	sequence = 0
 
@@ -104,6 +104,10 @@ async def traffic_ws(websocket: WebSocket) -> None:
 			}
 		)
 		while not stop_event.is_set():
+			engine = _get_engine(websocket)
+			if engine is None:
+				raise RuntimeError("Graph engine is not initialized")
+
 			sequence += 1
 			await websocket.send_json(
 				{

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -6,12 +6,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { getViewZoomMax, useGraphStore } from "@/store/graphStore";
+import {
+  getViewZoomMax,
+  NEARBY_K_MAX,
+  NEARBY_K_MIN,
+  REBUILD_VERTEX_MAX,
+  REBUILD_VERTEX_MIN,
+  useGraphStore,
+} from "@/store/graphStore";
 
 export function GraphControls() {
   const [x, setX] = useState("0.50");
   const [y, setY] = useState("0.50");
   const [k, setK] = useState("100");
+  const [nVertices, setNVertices] = useState("10000");
+  const autoSyncedSourceIdRef = useRef<number | null>(null);
 
   const meta = useGraphStore((state) => state.meta);
   const graph = useGraphStore((state) => state.graph);
@@ -63,6 +72,20 @@ export function GraphControls() {
   const connectTrafficStream = useGraphStore((state) => state.connectTrafficStream);
   const disconnectTrafficStream = useGraphStore((state) => state.disconnectTrafficStream);
   const clearSelection = useGraphStore((state) => state.clearSelection);
+  const rebuildGraph = useGraphStore((state) => state.rebuildGraph);
+
+  const normalizeNearbyK = (value: number): number => {
+    if (!Number.isFinite(value)) {
+      return NEARBY_K_MIN;
+    }
+    return Math.max(NEARBY_K_MIN, Math.min(NEARBY_K_MAX, Math.trunc(value)));
+  };
+
+  useEffect(() => {
+    if (meta?.n_vertices != null) {
+      setNVertices(String(meta.n_vertices));
+    }
+  }, [meta?.n_vertices]);
 
   useEffect(() => {
     if (trafficPollingEnabled) {
@@ -76,6 +99,37 @@ export function GraphControls() {
     };
   }, [connectTrafficStream, disconnectTrafficStream, trafficPollingEnabled]);
 
+  useEffect(() => {
+    if (selection.phase === "idle") {
+      autoSyncedSourceIdRef.current = null;
+      return;
+    }
+    if (selection.phase !== "pickedA" || selection.sourceVertexId == null || selectedVertex == null) {
+      return;
+    }
+    if (autoSyncedSourceIdRef.current === selection.sourceVertexId) {
+      return;
+    }
+
+    autoSyncedSourceIdRef.current = selection.sourceVertexId;
+    const normalizedK = normalizeNearbyK(Number.parseInt(k, 10));
+    setX(selectedVertex.x.toFixed(4));
+    setY(selectedVertex.y.toFixed(4));
+    if (String(normalizedK) !== k) {
+      setK(String(normalizedK));
+    }
+
+    void loadNearby(
+      {
+        x: selectedVertex.x,
+        y: selectedVertex.y,
+        k: normalizedK,
+        zoom: viewZoom,
+      },
+      { preserveSelection: true },
+    );
+  }, [k, loadNearby, selectedVertex, selection.phase, selection.sourceVertexId, viewZoom]);
+
   const onLoad = async (event: FormEvent) => {
     event.preventDefault();
     const xx = Number.parseFloat(x);
@@ -86,8 +140,13 @@ export function GraphControls() {
       return;
     }
 
+    const normalizedK = normalizeNearbyK(kk);
+    if (normalizedK !== kk) {
+      setK(String(normalizedK));
+    }
+
     await loadMeta();
-    await loadNearby({ x: xx, y: yy, k: kk, zoom: viewZoom });
+    await loadNearby({ x: xx, y: yy, k: normalizedK, zoom: viewZoom });
     await fetchTrafficState();
   };
 
@@ -97,6 +156,26 @@ export function GraphControls() {
     }
     setX(selectedVertex.x.toFixed(4));
     setY(selectedVertex.y.toFixed(4));
+  };
+
+  const onRebuild = async () => {
+    const xx = Number.parseFloat(x);
+    const yy = Number.parseFloat(y);
+    const kk = Number.parseInt(k, 10);
+    const nn = Number.parseInt(nVertices, 10);
+
+    if (!Number.isFinite(xx) || !Number.isFinite(yy) || !Number.isFinite(kk) || !Number.isFinite(nn)) {
+      return;
+    }
+    const normalizedK = normalizeNearbyK(kk);
+    if (normalizedK !== kk) {
+      setK(String(normalizedK));
+    }
+    if (nn < REBUILD_VERTEX_MIN || nn > REBUILD_VERTEX_MAX) {
+      return;
+    }
+
+    await rebuildGraph(nn, { x: xx, y: yy, k: normalizedK, zoom: viewZoom });
   };
 
   return (
@@ -114,11 +193,34 @@ export function GraphControls() {
           <Input id="graph-y" value={y} onChange={(event) => setY(event.target.value)} />
         </div>
         <div>
-          <Label htmlFor="graph-k">k</Label>
-          <Input id="graph-k" value={k} onChange={(event) => setK(event.target.value)} />
+          <Label htmlFor="graph-k">k (100-50000)</Label>
+          <Input
+            id="graph-k"
+            max={NEARBY_K_MAX}
+            min={NEARBY_K_MIN}
+            type="number"
+            value={k}
+            onChange={(event) => setK(event.target.value)}
+          />
+        </div>
+        <div>
+          <Label htmlFor="graph-n-vertices">n vertices ({REBUILD_VERTEX_MIN}-{REBUILD_VERTEX_MAX})</Label>
+          <Input
+            id="graph-n-vertices"
+            value={nVertices}
+            onChange={(event) => setNVertices(event.target.value)}
+          />
         </div>
         <Button disabled={network.loadingNearby || network.loadingMeta} type="submit">
           {network.loadingNearby || network.loadingMeta ? "加载中..." : "加载附近点边"}
+        </Button>
+        <Button
+          disabled={network.loadingRebuild || network.loadingNearby || network.loadingMeta}
+          onClick={() => void onRebuild()}
+          type="button"
+          variant="secondary"
+        >
+          {network.loadingRebuild ? "重建中..." : "按点数重建图"}
         </Button>
         <Button disabled={!selectedVertex} onClick={fillFromSelection} type="button" variant="outline">
           使用当前选中点坐标

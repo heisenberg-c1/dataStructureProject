@@ -12,24 +12,48 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router as graph_router
 from api.websocket import router as ws_router
+from core.simulator import TrafficConfig
 from services.graph_engine import GraphEngine
 
 
-def create_app(n_vertices: int = 10_000, seed: int = 42) -> FastAPI:
+def create_app(
+    n_vertices: int = 10_000,
+    seed: int = 42,
+    *,
+    traffic_config: TrafficConfig | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        engine = GraphEngine.from_random(n_vertices=n_vertices, seed=seed)
+        engine = GraphEngine.from_random(
+            n_vertices=n_vertices,
+            seed=seed,
+            traffic_config=traffic_config,
+        )
         app.state.graph_engine = engine
+        app.state.graph_engine_lock = asyncio.Lock()
+        app.state.graph_seed = seed
 
         stop_event = asyncio.Event()
 
         async def _traffic_tick_loop() -> None:
             while not stop_event.is_set():
-                engine.tick_traffic()
+                interval = 0.5
+                lock = getattr(app.state, "graph_engine_lock", None)
+                if isinstance(lock, asyncio.Lock):
+                    async with lock:
+                        active_engine = getattr(app.state, "graph_engine", None)
+                        if isinstance(active_engine, GraphEngine):
+                            active_engine.tick_traffic()
+                            interval = active_engine.traffic_tick_interval_seconds()
+                else:
+                    active_engine = getattr(app.state, "graph_engine", None)
+                    if isinstance(active_engine, GraphEngine):
+                        active_engine.tick_traffic()
+                        interval = active_engine.traffic_tick_interval_seconds()
                 try:
                     await asyncio.wait_for(
                         stop_event.wait(),
-                        timeout=engine.traffic_tick_interval_seconds(),
+                        timeout=interval,
                     )
                 except TimeoutError:
                     continue

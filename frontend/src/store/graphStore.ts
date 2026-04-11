@@ -23,6 +23,7 @@ interface NetworkState {
   loadingNearby: boolean;
   loadingPath: boolean;
   loadingTraffic: boolean;
+  loadingRebuild: boolean;
   error: string | null;
 }
 
@@ -40,6 +41,13 @@ interface NearbyQueryState {
 
 interface LoadNearbyOptions {
   preserveSelection?: boolean;
+}
+
+interface RebuildGraphParams {
+  x: number;
+  y: number;
+  k: number;
+  zoom?: number;
 }
 
 interface HoverState {
@@ -83,6 +91,7 @@ interface GraphStoreState {
 
   loadMeta: () => Promise<void>;
   loadNearby: (params: LoadNearbyParams, options?: LoadNearbyOptions) => Promise<void>;
+  rebuildGraph: (nVertices: number, params?: RebuildGraphParams) => Promise<void>;
   reloadNearbyForCurrentZoom: () => Promise<void>;
   computeShortestPath: () => Promise<void>;
 }
@@ -121,6 +130,10 @@ const initialView: ViewState = {
 
 export const VIEW_ZOOM_MIN = 120;
 export const VIEW_ZOOM_MAX = 12000;
+export const NEARBY_K_MIN = 100;
+export const NEARBY_K_MAX = 50_000;
+export const REBUILD_VERTEX_MIN = 10_000;
+export const REBUILD_VERTEX_MAX = 50_000;
 
 const VIEW_ZOOM_BASE_MAX = 5000;
 
@@ -136,6 +149,13 @@ export function getViewZoomMax(): number {
 
 function clampZoom(value: number): number {
   return Math.max(VIEW_ZOOM_MIN, Math.min(getViewZoomMax(), value));
+}
+
+function clampNearbyK(value: number): number {
+  if (!Number.isFinite(value)) {
+    return NEARBY_K_MIN;
+  }
+  return Math.max(NEARBY_K_MIN, Math.min(NEARBY_K_MAX, Math.trunc(value)));
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -220,6 +240,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     loadingNearby: false,
     loadingPath: false,
     loadingTraffic: false,
+    loadingRebuild: false,
     error: null,
   },
   request: {
@@ -579,13 +600,15 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const requestId = get().request.nearbyRequestId + 1;
     const state = get();
     const preserveSelection = Boolean(options?.preserveSelection);
+    const normalizedK = clampNearbyK(params.k);
     const query: NearbyQueryState = {
       x: params.x,
       y: params.y,
-      k: params.k,
+      k: normalizedK,
     };
     const requestParams: LoadNearbyParams = {
       ...params,
+      k: normalizedK,
       zoom: params.zoom ?? state.view.zoom,
     };
 
@@ -629,6 +652,77 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }
   },
 
+  rebuildGraph: async (nVertices, params) => {
+    if (!Number.isFinite(nVertices)) {
+      return;
+    }
+    const normalizedVertices = Math.trunc(nVertices);
+    if (normalizedVertices < REBUILD_VERTEX_MIN || normalizedVertices > REBUILD_VERTEX_MAX) {
+      set((prev) => ({
+        network: {
+          ...prev.network,
+          error: `n vertices must be in [${REBUILD_VERTEX_MIN}, ${REBUILD_VERTEX_MAX}]`,
+        },
+      }));
+      return;
+    }
+    if (get().network.loadingRebuild) {
+      return;
+    }
+
+    const state = get();
+    const nextQuery: LoadNearbyParams = {
+      x: params?.x ?? state.lastNearbyQuery?.x ?? 0.5,
+      y: params?.y ?? state.lastNearbyQuery?.y ?? 0.5,
+      k: clampNearbyK(params?.k ?? state.lastNearbyQuery?.k ?? 100),
+      zoom: params?.zoom ?? state.view.zoom,
+    };
+
+    set((prev) => ({
+      network: {
+        ...prev.network,
+        loadingRebuild: true,
+        error: null,
+      },
+      selection: initialSelection,
+      path: null,
+      staticPath: null,
+      trafficPath: null,
+      hover: { vertexId: null },
+      trafficTimestamp: null,
+      trafficEdgesById: {},
+      trafficLastSeq: 0,
+    }));
+
+    try {
+      const meta = await graphApi.postRebuildGraph({ n_vertices: normalizedVertices });
+      set((prev) => ({
+        meta,
+        network: {
+          ...prev.network,
+        },
+      }));
+
+      await get().loadNearby(nextQuery);
+      await get().fetchTrafficState();
+
+      set((prev) => ({
+        network: {
+          ...prev.network,
+          loadingRebuild: false,
+        },
+      }));
+    } catch (error) {
+      set((prev) => ({
+        network: {
+          ...prev.network,
+          loadingRebuild: false,
+          error: errorMessage(error, "Failed to rebuild graph"),
+        },
+      }));
+    }
+  },
+
   reloadNearbyForCurrentZoom: async () => {
     const state = get();
     if (!state.lastNearbyQuery || state.network.loadingNearby) {
@@ -636,6 +730,7 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     }
     await get().loadNearby({
       ...state.lastNearbyQuery,
+      k: clampNearbyK(state.lastNearbyQuery.k),
       zoom: state.view.zoom,
     }, { preserveSelection: true });
   },
