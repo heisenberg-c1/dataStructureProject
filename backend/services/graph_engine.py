@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Any, Optional
 
@@ -22,31 +22,33 @@ from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, qu
 CLUSTER_ZOOM_THRESHOLD_BASE = 1000.0
 CLUSTER_MAX_THRESHOLD_SCALE = 4.0
 CLUSTER_MIN_LEAF_POINTS = 6
-CLUSTER_MAX_LEAF_POINTS = 32
 CLUSTER_MAX_DEPTH = 9
+CLUSTER_MIN_DISPLAY_POINTS = 3
+CLUSTER_ZOOM_BUCKET_BASE = 1.18
 
 
 def random_planar_points(n: int, seed: int = 42) -> NDArray[np.float64]:
     rng = np.random.default_rng(seed)
     return rng.random((n, 2), dtype=np.float64)
 
-##建立一个“反向索引”，用于快速查找边 id,但是存在性能问题 TODO：后续用哈希表存储进行优化
-def _edge_lookup(graph: RoadGraph) -> dict[tuple[int, int], int]:
+def _build_edge_lookup(graph: RoadGraph) -> dict[tuple[int, int], int]:
     m: dict[tuple[int, int], int] = {}
     for eid, (u, v) in enumerate(graph.edges):
         m[(int(u), int(v))] = int(eid)
     return m
 
 
-def _path_edge_ids(graph: RoadGraph, path: list[int]) -> list[int]:
+def _path_edge_ids(path: list[int], edge_lookup: dict[tuple[int, int], int]) -> list[int]:
     if len(path) < 2:
         return []
-    lu = _edge_lookup(graph)
     out: list[int] = []
     for i in range(len(path) - 1):
         a, b = path[i], path[i + 1]
         u, v = (a, b) if a < b else (b, a)
-        out.append(lu[(u, v)])
+        eid = edge_lookup.get((u, v))
+        if eid is None:
+            raise ValueError(f"path edge ({u}, {v}) is not found in graph")
+        out.append(eid)
     return out
 
 
@@ -63,27 +65,40 @@ def _cluster_threshold_for_k(k: int) -> float:
     return CLUSTER_ZOOM_THRESHOLD_BASE * scaled
 
 
+def _cluster_target_display_count(raw_count: int, *, zoom: float, threshold: float) -> int:
+    ratio = max(0.0, min(1.0, zoom / max(threshold, 1.0)))
+    curved = ratio * ratio
+    target = CLUSTER_MIN_DISPLAY_POINTS + (raw_count - CLUSTER_MIN_DISPLAY_POINTS) * curved
+    return max(CLUSTER_MIN_DISPLAY_POINTS, min(raw_count, int(round(target))))
+
+
+def _zoom_bucket(zoom: float) -> int:
+    if zoom <= 1.0:
+        return 0
+    return int(math.floor(math.log(zoom) / math.log(CLUSTER_ZOOM_BUCKET_BASE)))
+
+
 def _quadtree_cluster_vertex_ids(
     points: NDArray[np.float64],
     vertex_ids: NDArray[np.int64],
     *,
     zoom: float,
     threshold: float,
-) -> tuple[list[int], dict[int, int], float, int]:
+    target_display_count: int | None = None,
+) -> tuple[list[int], dict[int, int], float, int, int]:
     """基于四叉树自适应聚合，返回代表点与原始点到代表点映射。"""
     ids = [int(v) for v in vertex_ids]
     if not ids:
-        return [], {}, 0.0, 0
+        return [], {}, 0.0, 0, CLUSTER_MIN_LEAF_POINTS
 
-    ratio = max(0.0, min(1.0, zoom / max(threshold, 1.0)))
-    # 缩得越小（ratio 越低）每个叶子容纳点越多，从而代表点更少。
-    leaf_capacity = int(
-        round(
-            CLUSTER_MIN_LEAF_POINTS
-            + (CLUSTER_MAX_LEAF_POINTS - CLUSTER_MIN_LEAF_POINTS) * (1.0 - ratio)
+    if target_display_count is None:
+        target_display_count = _cluster_target_display_count(
+            len(ids),
+            zoom=zoom,
+            threshold=threshold,
         )
-    )
-    leaf_capacity = max(CLUSTER_MIN_LEAF_POINTS, min(CLUSTER_MAX_LEAF_POINTS, leaf_capacity))
+    safe_target = max(1, min(len(ids), target_display_count))
+    leaf_capacity = max(CLUSTER_MIN_LEAF_POINTS, int(math.ceil(len(ids) / safe_target)))
 
     xs = points[vertex_ids, 0]
     ys = points[vertex_ids, 1]
@@ -168,7 +183,7 @@ def _quadtree_cluster_vertex_ids(
         leaf_spans.append(max(x1 - x0, y1 - y0))
 
     avg_span = float(sum(leaf_spans) / len(leaf_spans)) if leaf_spans else 0.0
-    return representatives, vertex_to_rep, avg_span, len(leaves)
+    return representatives, vertex_to_rep, avg_span, len(leaves), leaf_capacity
 
 
 @dataclass
@@ -177,6 +192,11 @@ class GraphEngine:
     adj: list[list[tuple[int, int]]]
     _tree: cKDTree
     traffic_simulator: TrafficSimulator | None = None
+    _edge_lookup_cache: dict[tuple[int, int], int] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self._edge_lookup_cache:
+            self._edge_lookup_cache = _build_edge_lookup(self.graph)
 
     @classmethod
     def from_random(
@@ -261,7 +281,7 @@ class GraphEngine:
         else:
             path, total_travel_time = shortest_path(self.adj, self.graph.edge_lengths, source, target)
 
-        edge_ids = _path_edge_ids(self.graph, path) if path else []
+        edge_ids = _path_edge_ids(path, self._edge_lookup_cache) if path else []
         total_length = _sum_edge_lengths(self.graph, edge_ids)
         out: dict[str, Any] = {
             "vertex_ids": path,
@@ -292,14 +312,23 @@ class GraphEngine:
         vertex_to_rep: dict[int, int] = {vid: vid for vid in raw_idx_list}
         cluster_cell_size: float | None = None
         cluster_leaf_count: int | None = None
+        cluster_leaf_capacity: int | None = None
+        cluster_target_display_count: int | None = None
+        cluster_zoom_bucket: int | None = _zoom_bucket(float(zoom)) if zoom is not None else None
         cluster_mode = "none"
 
         if should_cluster:
-            reps, vertex_to_rep, cluster_cell_size, cluster_leaf_count = _quadtree_cluster_vertex_ids(
+            cluster_target_display_count = _cluster_target_display_count(
+                len(raw_idx_list),
+                zoom=float(zoom),
+                threshold=cluster_threshold,
+            )
+            reps, vertex_to_rep, cluster_cell_size, cluster_leaf_count, cluster_leaf_capacity = _quadtree_cluster_vertex_ids(
                 g.points,
                 raw_idx,
                 zoom=float(zoom),
                 threshold=cluster_threshold,
+                target_display_count=cluster_target_display_count,
             )
             reps.sort(key=lambda vid: (g.points[vid, 0] - center_xy[0]) ** 2 + (g.points[vid, 1] - center_xy[1]) ** 2)
             idx_list = reps
@@ -350,4 +379,7 @@ class GraphEngine:
             "zoom": float(zoom) if zoom is not None else None,
             "cluster_cell_size": cluster_cell_size,
             "cluster_leaf_count": cluster_leaf_count,
+            "cluster_leaf_capacity": cluster_leaf_capacity,
+            "cluster_target_display_count": cluster_target_display_count,
+            "cluster_zoom_bucket": cluster_zoom_bucket,
         }

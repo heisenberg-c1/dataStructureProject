@@ -12,6 +12,9 @@ export interface ClusterInfo {
 	zoom: number | null;
 	cellSize: number | null;
 	leafCount: number | null;
+	leafCapacity: number | null;
+	targetDisplayCount: number | null;
+	zoomBucket: number | null;
 }
 
 export interface PathData {

@@ -68,6 +68,9 @@ class NearbyResponse(BaseModel):
 	zoom: float | None = None
 	cluster_cell_size: float | None = None
 	cluster_leaf_count: int | None = None
+	cluster_leaf_capacity: int | None = None
+	cluster_target_display_count: int | None = None
+	cluster_zoom_bucket: int | None = None
 
 
 class ShortestPathRequest(BaseModel):

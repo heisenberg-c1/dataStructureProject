@@ -31,6 +31,9 @@ export function toGraphData(raw: NearbyResponse): GraphData {
       zoom: raw.zoom ?? null,
       cellSize: raw.cluster_cell_size ?? null,
       leafCount: raw.cluster_leaf_count ?? null,
+      leafCapacity: raw.cluster_leaf_capacity ?? null,
+      targetDisplayCount: raw.cluster_target_display_count ?? null,
+      zoomBucket: raw.cluster_zoom_bucket ?? null,
     },
   };
 }

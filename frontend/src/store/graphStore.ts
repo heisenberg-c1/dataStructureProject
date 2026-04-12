@@ -113,6 +113,9 @@ const initialGraph: GraphData = {
     zoom: null,
     cellSize: null,
     leafCount: null,
+    leafCapacity: null,
+    targetDisplayCount: null,
+    zoomBucket: null,
   },
 };
 

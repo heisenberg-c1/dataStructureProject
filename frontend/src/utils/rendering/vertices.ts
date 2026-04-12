@@ -5,6 +5,9 @@ import type { SelectionState, Vertex, ViewState } from "@/types";
 import { worldToScreenX, worldToScreenY } from "../coor";
 import { getVertexStyle } from "../style";
 
+const WORLD_CENTER = 0.5;
+const CULL_MARGIN_PX = 24;
+
 interface VertexGraphics {
   halos: Graphics;
   cores: Graphics;
@@ -21,6 +24,23 @@ interface RenderVerticesInput {
   height: number;
 }
 
+interface WorldBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+function computeWorldBounds(view: ViewState, width: number, height: number, marginPx = CULL_MARGIN_PX): WorldBounds {
+  const safeZoom = Math.max(1, view.zoom);
+  const marginWorld = marginPx / safeZoom;
+  const minX = (0 - width / 2 - view.panX) / safeZoom + WORLD_CENTER - marginWorld;
+  const maxX = (width - width / 2 - view.panX) / safeZoom + WORLD_CENTER + marginWorld;
+  const minY = (0 - height / 2 - view.panY) / safeZoom + WORLD_CENTER - marginWorld;
+  const maxY = (height - height / 2 - view.panY) / safeZoom + WORLD_CENTER + marginWorld;
+  return { minX, maxX, minY, maxY };
+}
+
 export function renderVertices({
   graphics,
   vertices,
@@ -33,8 +53,18 @@ export function renderVertices({
   graphics.halos.clear();
   graphics.cores.clear();
   graphics.rings.clear();
+  const worldBounds = computeWorldBounds(view, width, height);
 
   for (const vertex of vertices) {
+    if (
+      vertex.x < worldBounds.minX ||
+      vertex.x > worldBounds.maxX ||
+      vertex.y < worldBounds.minY ||
+      vertex.y > worldBounds.maxY
+    ) {
+      continue;
+    }
+
     const x = worldToScreenX(vertex.x, view, width);
     const y = worldToScreenY(vertex.y, view, height);
     const style = getVertexStyle(vertex.id, selection, hoverVertexId);

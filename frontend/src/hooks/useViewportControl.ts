@@ -5,16 +5,23 @@ import { Application, Container } from "pixi.js";
 import { getViewZoomMax, useGraphStore, VIEW_ZOOM_MIN } from "@/store/graphStore";
 import type { Vertex, ViewState } from "@/types";
 import { screenToWorld } from "@/utils/coor";
-import { HOVER_PICK_THRESHOLD, SELECT_PICK_THRESHOLD, pickNearestVertex } from "@/utils/picking";
+import {
+  HOVER_PICK_THRESHOLD,
+  SELECT_PICK_THRESHOLD,
+  pickNearestVertex,
+  type VertexKDTreeIndex,
+} from "@/utils/picking";
 import { debounce, throttle } from "@/utils/throttle";
 
 const HOVER_THROTTLE_MS = 16;
+const HOVER_COMMIT_THROTTLE_MS = 60;
 const VIEW_COMMIT_DEBOUNCE_MS = 90;
 
 interface UseViewportControlParams {
   app: Application | null;
   interactionContainer: Container | null;
   verticesRef: MutableRefObject<Vertex[]>;
+  spatialIndexRef: MutableRefObject<VertexKDTreeIndex | null>;
   committedViewRef: MutableRefObject<ViewState>;
   interactionViewRef: MutableRefObject<ViewState>;
 }
@@ -23,6 +30,7 @@ export function useViewportControl({
   app,
   interactionContainer,
   verticesRef,
+  spatialIndexRef,
   committedViewRef,
   interactionViewRef,
 }: UseViewportControlParams): void {
@@ -38,6 +46,7 @@ export function useViewportControl({
     let moved = false;
     let lastX = 0;
     let lastY = 0;
+    let hoverKnownId: number | null = useGraphStore.getState().hover.vertexId;
 
     const applyTransientTransform = (baseView: ViewState, nextView: ViewState) => {
       if (disposed || interactionContainer.destroyed) {
@@ -70,6 +79,14 @@ export function useViewportControl({
       useGraphStore.getState().setView(nextView);
     };
 
+    const throttledCommitHover = throttle((vertexId: number | null) => {
+      const current = useGraphStore.getState().hover.vertexId;
+      if (current === vertexId) {
+        return;
+      }
+      useGraphStore.getState().setHover(vertexId);
+    }, HOVER_COMMIT_THROTTLE_MS);
+
     const throttledHoverPick = throttle((localX: number, localY: number) => {
       const nearest = pickNearestVertex(
         localX,
@@ -79,8 +96,13 @@ export function useViewportControl({
         app.screen.width,
         app.screen.height,
         HOVER_PICK_THRESHOLD,
+        spatialIndexRef.current,
       );
-      useGraphStore.getState().setHover(nearest);
+      if (nearest === hoverKnownId) {
+        return;
+      }
+      hoverKnownId = nearest;
+      throttledCommitHover(nearest);
     }, HOVER_THROTTLE_MS);
 
     const debouncedCommitView = debounce(() => {
@@ -151,6 +173,7 @@ export function useViewportControl({
           app.screen.width,
           app.screen.height,
           SELECT_PICK_THRESHOLD,
+          spatialIndexRef.current,
         );
         if (nearest != null) {
           useGraphStore.getState().selectVertex(nearest);
@@ -173,10 +196,12 @@ export function useViewportControl({
       }
 
       throttledHoverPick.cancel();
+      throttledCommitHover.cancel();
       dragging = false;
       moved = false;
       debouncedCommitView.cancel();
       commitInteractionView();
+      hoverKnownId = null;
       useGraphStore.getState().setHover(null);
     };
 
@@ -234,7 +259,8 @@ export function useViewportControl({
       canvas.removeEventListener("wheel", onWheel);
 
       throttledHoverPick.cancel();
+      throttledCommitHover.cancel();
       debouncedCommitView.cancel();
     };
-  }, [app, committedViewRef, interactionContainer, interactionViewRef, verticesRef]);
+  }, [app, committedViewRef, interactionContainer, interactionViewRef, spatialIndexRef, verticesRef]);
 }

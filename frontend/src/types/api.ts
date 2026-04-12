@@ -22,6 +22,9 @@ export interface NearbyResponse {
 	zoom?: number | null;
 	cluster_cell_size?: number | null;
 	cluster_leaf_count?: number | null;
+	cluster_leaf_capacity?: number | null;
+	cluster_target_display_count?: number | null;
+	cluster_zoom_bucket?: number | null;
 }
 
 export interface ShortestPathRequest {

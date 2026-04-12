@@ -7,10 +7,31 @@ import { renderPaths } from "../utils/rendering/paths";
 import { renderVertices } from "../utils/rendering/vertices";
 import { useGraphStore } from "@/store/graphStore";
 import type { Edge, Vertex, ViewState } from "@/types";
+import { VertexKDTreeIndex } from "@/utils/picking";
+
+const ZOOM_BUCKET_BASE = 1.18;
+
+function zoomBucket(zoom: number): number {
+  if (zoom <= 1) {
+    return 0;
+  }
+  return Math.floor(Math.log(zoom) / Math.log(ZOOM_BUCKET_BASE));
+}
+
+function pathSignature(path: { edgeIds: number[]; vertexIds: number[] } | null): string {
+  if (!path) {
+    return "none";
+  }
+  return `${path.edgeIds.join(",")}|${path.vertexIds.join(",")}`;
+}
 
 export function GraphCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const verticesRef = useRef<Vertex[]>([]);
+  const spatialIndexRef = useRef<VertexKDTreeIndex | null>(null);
+  const edgesRenderKeyRef = useRef<string>("");
+  const pathsRenderKeyRef = useRef<string>("");
+  const verticesRenderKeyRef = useRef<string>("");
   const committedViewRef = useRef<ViewState>({ zoom: 900, panX: 0, panY: 0 });
   const interactionViewRef = useRef<ViewState>({ zoom: 900, panX: 0, panY: 0 });
 
@@ -31,9 +52,12 @@ export function GraphCanvas() {
   const currentClusterThreshold = useGraphStore((state) => state.graph.cluster.threshold);
   const loadingNearby = useGraphStore((state) => state.network.loadingNearby);
   const reloadNearbyForCurrentZoom = useGraphStore((state) => state.reloadNearbyForCurrentZoom);
+  const nearbyRequestId = useGraphStore((state) => state.request.nearbyRequestId);
+  const trafficLastSeq = useGraphStore((state) => state.trafficLastSeq);
 
   useEffect(() => {
     verticesRef.current = vertices;
+    spatialIndexRef.current = new VertexKDTreeIndex(vertices);
   }, [vertices]);
 
   useEffect(() => {
@@ -50,6 +74,7 @@ export function GraphCanvas() {
     app,
     interactionContainer,
     verticesRef,
+    spatialIndexRef,
     committedViewRef,
     interactionViewRef,
   });
@@ -75,18 +100,19 @@ export function GraphCanvas() {
       return;
     }
 
-    const zoomDelta = currentGraphZoom == null ? Number.POSITIVE_INFINITY : Math.abs(currentGraphZoom - view.zoom);
-    const significantDelta = Math.max(80, view.zoom * 0.06);
+    const graphBucket = currentGraphZoom == null ? null : zoomBucket(currentGraphZoom);
+    const viewBucket = zoomBucket(view.zoom);
+    const crossedBucket = graphBucket == null || graphBucket !== viewBucket;
     const nowClustered = currentClusterThreshold == null ? false : view.zoom < currentClusterThreshold;
     const crossedBoundary = currentClusterThreshold != null && nowClustered !== currentClustered;
 
-    if (!crossedBoundary && zoomDelta < significantDelta) {
+    if (!crossedBoundary && !crossedBucket) {
       return;
     }
 
     const timer = window.setTimeout(() => {
       void reloadNearbyForCurrentZoom();
-    }, 140);
+    }, 110);
     return () => {
       window.clearTimeout(timer);
     };
@@ -102,6 +128,45 @@ export function GraphCanvas() {
 
   useEffect(() => {
     const edgesGraphics = layers.edges;
+
+    if (
+      !app ||
+      app.stage.destroyed ||
+      !edgesGraphics ||
+      edgesGraphics.destroyed
+    ) {
+      return;
+    }
+
+    const width = app.screen.width;
+    const height = app.screen.height;
+    const renderKey = `${nearbyRequestId}|${trafficLastSeq}|${edges.length}|${view.zoom}|${view.panX}|${view.panY}`;
+    if (edgesRenderKeyRef.current === renderKey) {
+      return;
+    }
+    edgesRenderKeyRef.current = renderKey;
+
+    renderEdges({
+      graphics: edgesGraphics,
+      edges,
+      vertexMap,
+      trafficEdgesById,
+      view,
+      width,
+      height,
+    });
+  }, [
+    app,
+    edges,
+    layers.edges,
+    nearbyRequestId,
+    trafficLastSeq,
+    trafficEdgesById,
+    vertexMap,
+    view,
+  ]);
+
+  useEffect(() => {
     const pathEdgesGraphics = layers.pathEdges;
     const pathVerticesOutlineGraphics = layers.pathVerticesOutline;
     const pathVerticesGraphics = layers.pathVertices;
@@ -109,8 +174,6 @@ export function GraphCanvas() {
     if (
       !app ||
       app.stage.destroyed ||
-      !edgesGraphics ||
-      edgesGraphics.destroyed ||
       !pathEdgesGraphics ||
       pathEdgesGraphics.destroyed ||
       !pathVerticesOutlineGraphics ||
@@ -123,16 +186,11 @@ export function GraphCanvas() {
 
     const width = app.screen.width;
     const height = app.screen.height;
-
-    renderEdges({
-      graphics: edgesGraphics,
-      edges,
-      vertexMap,
-      trafficEdgesById,
-      view,
-      width,
-      height,
-    });
+    const renderKey = `${nearbyRequestId}|${pathMode}|${pathSignature(staticPath)}|${pathSignature(trafficPath)}|${view.zoom}|${view.panX}|${view.panY}`;
+    if (pathsRenderKeyRef.current === renderKey) {
+      return;
+    }
+    pathsRenderKeyRef.current = renderKey;
 
     renderPaths({
       graphics: {
@@ -152,14 +210,12 @@ export function GraphCanvas() {
   }, [
     app,
     edgeMap,
-    edges,
-    layers.edges,
     layers.pathEdges,
     layers.pathVertices,
     layers.pathVerticesOutline,
+    nearbyRequestId,
     pathMode,
     staticPath,
-    trafficEdgesById,
     trafficPath,
     vertexMap,
     view,
@@ -183,6 +239,12 @@ export function GraphCanvas() {
       return;
     }
 
+    const renderKey = `${nearbyRequestId}|${vertices.length}|${selection.phase}|${selection.sourceVertexId ?? "n"}|${selection.targetVertexId ?? "n"}|${hoverVertexId ?? "n"}|${view.zoom}|${view.panX}|${view.panY}`;
+    if (verticesRenderKeyRef.current === renderKey) {
+      return;
+    }
+    verticesRenderKeyRef.current = renderKey;
+
     renderVertices({
       graphics: {
         halos: vertexHalosGraphics,
@@ -202,6 +264,7 @@ export function GraphCanvas() {
     layers.vertexHalos,
     layers.vertexRings,
     layers.vertices,
+    nearbyRequestId,
     selection,
     vertices,
     view,
