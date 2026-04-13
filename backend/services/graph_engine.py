@@ -13,7 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
-from core.algorithms.dijkstra import shortest_path
+from backend.core.algorithms.AStar import shortest_path
 from core.graph import RoadGraph, build_adjacency, build_road_graph_from_points
 from core.simulator import TrafficConfig, TrafficSimulator
 from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, query_nearest_k
@@ -25,6 +25,7 @@ CLUSTER_MIN_LEAF_POINTS = 6
 CLUSTER_MAX_DEPTH = 9
 CLUSTER_MIN_DISPLAY_POINTS = 3
 CLUSTER_ZOOM_BUCKET_BASE = 1.18
+ASTAR_SCALE_EPS = 1e-12
 
 
 def random_planar_points(n: int, seed: int = 42) -> NDArray[np.float64]:
@@ -57,6 +58,20 @@ def _sum_edge_lengths(graph: RoadGraph, edge_ids: list[int]) -> float:
         return 0.0
     idx = np.asarray(edge_ids, dtype=np.int64)
     return float(np.sum(graph.edge_lengths[idx]))
+
+
+def _heuristic_scale_from_weights(
+    edge_weights: NDArray[np.float64],
+    edge_lengths: NDArray[np.float64],
+) -> float:
+    if edge_weights.shape != edge_lengths.shape:
+        raise ValueError("edge_weights and edge_lengths must have the same shape")
+    if edge_weights.size == 0:
+        return 0.0
+
+    safe_lengths = np.maximum(edge_lengths, ASTAR_SCALE_EPS)
+    ratios = np.asarray(edge_weights, dtype=np.float64) / safe_lengths
+    return max(0.0, float(np.min(ratios)))
 
 
 def _cluster_threshold_for_k(k: int) -> float:
@@ -277,9 +292,24 @@ class GraphEngine:
             if self.traffic_simulator is None:
                 raise RuntimeError("Traffic simulator is not initialized")
             edge_weights = self.traffic_simulator.dynamic_edge_weights()
-            path, total_travel_time = shortest_path(self.adj, edge_weights, source, target)
+            heuristic_scale = _heuristic_scale_from_weights(edge_weights, self.graph.edge_lengths)
+            path, total_travel_time = shortest_path(
+                self.adj,
+                edge_weights,
+                source,
+                target,
+                points=self.graph.points,
+                heuristic_scale=heuristic_scale,
+            )
         else:
-            path, total_travel_time = shortest_path(self.adj, self.graph.edge_lengths, source, target)
+            path, total_travel_time = shortest_path(
+                self.adj,
+                self.graph.edge_lengths,
+                source,
+                target,
+                points=self.graph.points,
+                heuristic_scale=1.0,
+            )
 
         edge_ids = _path_edge_ids(path, self._edge_lookup_cache) if path else []
         total_length = _sum_edge_lengths(self.graph, edge_ids)
