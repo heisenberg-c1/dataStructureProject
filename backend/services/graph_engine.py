@@ -13,7 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import cKDTree
 
-from backend.core.algorithms.AStar import shortest_path
+from core.algorithms.AStar import shortest_path
 from core.graph import RoadGraph, build_adjacency, build_road_graph_from_points
 from core.simulator import TrafficConfig, TrafficSimulator
 from core.spatial.kdtree import build_point_tree, edges_incident_to_vertices, query_nearest_k
